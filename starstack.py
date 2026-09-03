@@ -322,7 +322,7 @@ def build_master_dark(darks: list, log) -> np.ndarray | None:
         return None
     cube = np.stack(imgs, axis=0)
     master = np.median(cube, axis=0).astype(np.float32)
-    log(f"master dark: {len(imgs)} frames, median {float(np.median(master)):.5f}")
+    log(f"master dark: {len(imgs)} frame{'s' if len(imgs) != 1 else ''}, median {float(np.median(master)):.5f}. Subtracting it from everyone.")
     return master
 
 
@@ -439,7 +439,8 @@ def autostretch(img: np.ndarray, shadow_clip: float = -2.8, target_bg: float = 0
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="starstack",
-        description="Point it at a folder of frames. Get one stacked image out.",
+        description="Point it at a folder of frames. Push the button. Get one stacked image out. "
+                    "No sequence files, no process folder, no opinions about your workflow.",
     )
     p.add_argument("folder", help="folder of frames (or a glob)")
     p.add_argument("-o", "--out", default="stacked.tif",
@@ -481,7 +482,7 @@ def main(argv=None):
             if os.path.splitext(f)[1].lower() in IMAGE_EXT
         )
     if not paths:
-        sys.exit(f"no image files found in {args.folder}")
+        sys.exit(f"no image files in {args.folder}. Nothing to stack. Check the path.")
     frames = [Frame(path=p_) for p_ in paths]
 
     # darks: by name, plus anything under --darks
@@ -515,10 +516,11 @@ def main(argv=None):
         if f.kind == "dark" and _family(f.path) not in light_fams:
             f.kind, f.status = "skip", "skipped"
             f.note = "dark is a different file type than the lights; not mixing pipelines"
-            log(f"ignoring {os.path.basename(f.path)}: different file type than the lights")
+            log(f"found {os.path.basename(f.path)}: a dark in a different format than the lights. "
+                f"That came out of some other program. Not mixing pipelines. Ignored.")
 
     n_dark = sum(f.kind == "dark" for f in frames)
-    log(f"found {len(frames) - n_dark} lights, {n_dark} darks")
+    log(f"{len(frames) - n_dark} lights, {n_dark} dark{'s' if n_dark != 1 else ''}. Fine.")
 
     # Unistellar drops a manifest.json next to the frames; say what this is
     session = {}
@@ -535,7 +537,8 @@ def main(argv=None):
                        "scope_stacked": (mf.get("obs_attr") or {}).get("frames_stacked")}
             log(f"Unistellar session: {session['target']}  "
                 f"{session['saved']} x {session['exposure_s']:.1f}s, gain {session['gain']}, "
-                f"{session['sensor']}  (the scope itself kept {session['scope_stacked']})")
+                f"{session['sensor']}.  The scope itself gave up on "
+                f"{(session['saved'] or 0) - (session['scope_stacked'] or 0)} of them. We'll see.")
         except Exception:
             session = {}
 
@@ -547,7 +550,7 @@ def main(argv=None):
             f.status, f.note = "unreadable", str(e)[:80]
     lights = [f for f in frames if f.kind == "light" and f.status == "pending"]
     if not lights:
-        sys.exit("no readable light frames")
+        sys.exit("couldn't read a single frame. Wrong folder, or not images.")
 
     # Things that live next to the subs but are not subs: the scope's own
     # finished stack, a stretched 8-bit preview, a thumbnail. They must not
@@ -557,29 +560,35 @@ def main(argv=None):
     for f in lights:
         name = os.path.basename(f.path).lower()
         why = None
+        grumble = None
         if any(w in name for w in NOT_A_SUB):
             why = "not a sub, judging by its name"
+            what = ("a JPEG" if name.endswith((".jpg", ".jpeg")) else
+                    "a finished stack" if "stack" in name else "not a sub")
+            grumble = f"found {os.path.basename(f.path)}. That's {what}. Removed it from the pile. You're welcome."
         elif f.bits == 8 and major_bits >= 16:
             why = f"8-bit file among {major_bits}-bit subs (a preview, not data)"
+            grumble = (f"found {os.path.basename(f.path)}: 8-bit, in a pile of {major_bits}-bit subs. "
+                       f"That's a preview, not data. Removed it. You're welcome.")
         if why:
             f.kind, f.status, f.note = "skip", "skipped", why
-            log(f"skipping {os.path.basename(f.path)}: {why}")
+            log(grumble)
     lights = [f for f in lights if f.kind == "light"]
     darks = [f for f in frames if f.kind == "dark" and f.status == "pending"]
     if not lights:
-        sys.exit("no usable light frames")
-    log(f"  {len(lights)} subs to stack")
+        sys.exit("nothing left that looks like a sub. Wrong folder?")
+    log(f"  {len(lights)} actual subs. Proceeding.")
 
     sizes = Counter(f.raw_shape[:2] for f in lights)
     major_shape = sizes.most_common(1)[0][0]
     if len(sizes) > 1:
-        log("  frame sizes present (all will be used):")
+        log("  frames come in more than one size. Some programs stop here. Not this one:")
         for shp, cnt in sizes.most_common():
             log(f"    {shp[1]}x{shp[0]}  {cnt:>5} frames")
         if args.no_align:
             log("  --no-align: odd sizes will be cropped/padded to the reference, top-left anchored")
         else:
-            log("  star alignment will map every frame onto the reference frame's grid")
+            log("  everything gets mapped onto the reference grid. Nobody is left behind for being short.")
 
     usable = lights
     if args.max_frames:
@@ -588,7 +597,7 @@ def main(argv=None):
     # ---- master dark --------------------------------------------------------
     master_dark = build_master_dark(darks, log) if darks else None
     if darks and master_dark is None:
-        log("  no usable darks -- continuing without dark subtraction")
+        log("  darks were named like darks but couldn't be read. Stacking without. Hot pixels are your problem now.")
 
     # ---- bayer decision -----------------------------------------------------
     pattern = None
@@ -604,15 +613,16 @@ def main(argv=None):
                     sample = read_image(usable[len(usable) // 2].path)
                     pattern = detect_bayer(sample)
                     if pattern:
-                        log(f"no Bayer header, but the pixels look like a colour mosaic: "
-                            f"assuming {pattern} (Unistellar/Seestar). "
-                            f"Override with --debayer if colours come out wrong.")
+                        log(f"no Bayer header, because TIFF. Looked at the pixels instead: "
+                            f"it's a colour mosaic. Going with {pattern}. "
+                            f"If the galaxy comes out blue, --debayer "
+                            f"{'BGGR' if pattern == 'RGGB' else 'RGGB' if pattern == 'BGGR' else 'GRBG' if pattern == 'GBRG' else 'GBRG'}.")
                 except Exception:
                     pattern = None
         else:
             pattern = args.debayer.upper()
     if pattern:
-        log(f"debayering as {pattern}")
+        log(f"debayering as {pattern}.")
 
     # ---- pick reference -----------------------------------------------------
     def load_prepared(f: Frame):
@@ -638,12 +648,12 @@ def main(argv=None):
             if n > best_n:
                 best, best_n, best_img = cands[i], n, img
         if best is None:
-            sys.exit("could not read any frame to use as a reference")
+            sys.exit("couldn't read any frame well enough to use as a reference. Giving up, reluctantly.")
         ref_frame, ref_img = best, best_img
-        log(f"reference: {os.path.basename(ref_frame.path)} ({best_n} stars detected)")
+        log(f"reference: {os.path.basename(ref_frame.path)} ({best_n} stars). Everyone else lines up to this one.")
         if best_n < args.min_stars and not args.no_align:
-            log(f"  warning: only {best_n} stars found -- alignment may fail. "
-                f"Consider --no-align if these frames are already registered.")
+            log(f"  only {best_n} stars. Alignment may sulk. "
+                f"--no-align if these frames are already registered.")
 
     ref_lum = luminance(ref_img)
     rl = ref_lum[np.isfinite(ref_lum)]
@@ -661,7 +671,7 @@ def main(argv=None):
     tmpdir = tempfile.mkdtemp(prefix="starstack_")
     mm = None
     if not streaming:
-        log(f"scratch cube: {nbytes/1e9:.2f} GB in {tmpdir}")
+        log(f"scratch cube: {nbytes/1e9:.2f} GB in {tmpdir}. It's temporary. Relax.")
         mm = np.lib.format.open_memmap(
             os.path.join(tmpdir, "cube.npy"), mode="w+",
             dtype=np.float32, shape=(len(usable),) + out_shape)
@@ -709,10 +719,10 @@ def main(argv=None):
         print()
 
     if kept == 0:
-        sys.exit("no frames survived registration")
+        sys.exit("not one frame would align to the reference. Either these aren't the same sky, or there are no stars. Try --no-align if they're already registered.")
 
     # ---- combine ------------------------------------------------------------
-    log(f"combining {kept} frames ({args.method})")
+    log(f"combining {kept} frames ({args.method}). " + ("Satellites, planes and cosmic rays: goodbye." if args.method == "sigma" else ""))
     if streaming:
         with np.errstate(all="ignore"):
             stacked = (acc / np.maximum(cnt, 1)).astype(np.float32)
@@ -785,9 +795,11 @@ def main(argv=None):
 
     rejected = tally["unreadable"] + tally["align"]
     if rejected and not args.quiet:
-        print(f"\n{rejected} frame(s) were left out. "
-              f"{'Run with --report to see which. ' if not args.report else ''}"
-              f"That is normal and not an error.")
+        print(f"\n{rejected} frame(s) wouldn't cooperate and were left out. "
+              f"{'--report tells you which. ' if not args.report else 'They are in the report. '}"
+              f"That is normal. Not an error. Don't email me.")
+    if not args.quiet:
+        print("done. go outside.")
     return 0
 
 

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <!-- The Big Red Button. -->
+  <defs>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8b9099"/><stop offset="1" stop-color="#40454d"/>
+    </linearGradient>
+    <radialGradient id="cap" cx="45%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#ff6b57"/><stop offset="0.6" stop-color="#d7301c"/><stop offset="1" stop-color="#8c1a0f"/>
+    </radialGradient>
+    <linearGradient id="side" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b3281a"/><stop offset="1" stop-color="#5e110a"/>
+    </linearGradient>
+  </defs>
+  <!-- plate -->
+  <rect x="40" y="40" width="320" height="320" rx="28" fill="#2a2e35"/>
+  <rect x="40" y="40" width="320" height="320" rx="28" fill="none" stroke="#1a1d22" stroke-width="4"/>
+  <g fill="#8b9099"><circle cx="66" cy="66" r="7"/><circle cx="334" cy="66" r="7"/><circle cx="66" cy="334" r="7"/><circle cx="334" cy="334" r="7"/></g>
+  <!-- bezel ring -->
+  <circle cx="200" cy="200" r="132" fill="url(#bezel)"/>
+  <circle cx="200" cy="200" r="118" fill="#1c1f24"/>
+  <!-- button side (height) -->
+  <ellipse cx="200" cy="214" rx="104" ry="100" fill="url(#side)"/>
+  <!-- cap -->
+  <ellipse cx="200" cy="192" rx="104" ry="96" fill="url(#cap)"/>
+  <!-- highlight -->
+  <ellipse cx="170" cy="150" rx="46" ry="22" fill="#ffffff" opacity="0.22"/>
+  <!-- label -->
+  <text x="200" y="208" text-anchor="middle" font-family="Impact, 'Arial Black', Helvetica, Arial, sans-serif" font-size="54" font-weight="900" fill="#fff4ee" letter-spacing="4">STACK</text>
+</svg>
