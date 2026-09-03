@@ -10,12 +10,13 @@ python starstack.py /path/to/frames -o result.tif --preview look.png
 That's the whole workflow. No sequence files, no process folder, no
 "register first, then stack", no state left on disk.
 
-![M81 from 40 Unistellar Odyssey Pro frames, straight out of starstack](docs/m81_example.png)
+![M81 stacked with starstack from 710 Unistellar Odyssey Pro frames](docs/m81_example.png)
 
-*M81 (Bode's Galaxy), 40 × 4 s from a Unistellar Odyssey Pro, pointed at the
-session folder exactly as the scope exported it. Dark applied, Bayer mosaic
-detected, aligned, sigma-clipped. Only the auto-stretch and a gradient flatten
-were added for display.*
+*M81 (Bode's Galaxy), 710 × 4 s from a Unistellar Odyssey Pro under Austin,
+Texas skies. starstack was pointed at the session folder exactly as the
+scope exported it -- dark applied, Bayer mosaic detected, 695 frames
+aligned and sigma-clipped, the rest rejected. The linear stack was then
+stretched and finished in AstroWizards.*
 
 ## Why
 
@@ -139,7 +140,8 @@ want something to run against before pointing it at a real night.
 The real thing: a 710-frame Unistellar Odyssey Pro session of M81, run on
 the folder untouched -- `StackInput.tiff` lights, `DarkframeMean.tiff`,
 `StackSum.tiff`, `preview.jpg`, `manifest.json` and a stray Siril
-`master_dark.fit` all present. Result above.
+`master_dark.fit` all present. 695 frames aligned; the scope's own
+stacker had kept 412. Result above.
 
 Also a synthetic set, so the numbers can be checked:
 
