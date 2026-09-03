@@ -43,6 +43,12 @@ that is the data's fault. This tool reads what is there and gets on with it.
 - **Skips bad frames instead of dying.** Unreadable file, frame with no stars,
   alignment that won't converge — it's logged, left out, and the run
   continues. `--report frames.csv` tells you exactly which and why.
+- **Ignores things that aren't subs.** A scope's own finished stack, a
+  stretched 8-bit `preview.jpg`, a thumbnail — anything named like one
+  (`preview`, `thumb`, `stacksum`, `stacked`, `master`, `final`) or that is
+  8-bit when the real subs are 16-bit is left out. The reference frame is
+  only ever picked from frames of the dominant size, so a straggler can
+  never decide the output geometry.
 - **Debayers raw frames, TIFFs included.** FITS get the pattern from the
   `BAYERPAT` header. TIFF/PNG have no header, so it looks at the pixels: a
   mosaic has four 2×2 phases with different means and a matching green pair

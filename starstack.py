@@ -56,7 +56,8 @@ class Frame:
     shape: tuple | None = None          # (H, W) or (H, W, C) after debayer plan
     raw_shape: tuple | None = None      # as stored on disk
     bayer: str | None = None
-    kind: str = "light"                 # light | dark
+    bits: int = 0                       # bits per sample on disk
+    kind: str = "light"                 # light | dark | skip
     status: str = "pending"             # used | unreadable | align | dark
     note: str = ""
 
@@ -115,7 +116,8 @@ def read_image(path: str, want_header: bool = False):
 
 
 def probe(path: str):
-    """Cheap shape/bayer read without pulling full pixel data where possible."""
+    """Cheap (shape, bayer, bits-per-sample) read without pulling full pixel
+    data where possible."""
     ext = os.path.splitext(path)[1].lower()
     if ext in FITS_EXT:
         from astropy.io import fits as _fits
@@ -131,16 +133,18 @@ def probe(path: str):
                 bayer = bayer.strip().upper()
                 if bayer not in ("RGGB", "BGGR", "GRBG", "GBRG"):
                     bayer = None
-            return shp, bayer
+            return shp, bayer, abs(int(hdu.header.get("BITPIX", 16)))
     if ext in (".tif", ".tiff"):
         import tifffile
         with tifffile.TiffFile(path) as tf:
-            return tuple(tf.series[0].shape), None
+            s = tf.series[0]
+            return tuple(s.shape), None, int(np.dtype(s.dtype).itemsize * 8)
     from PIL import Image
     with Image.open(path) as im:
         w, h = im.size
         nch = len(im.getbands())
-        return ((h, w) if nch == 1 else (h, w, min(nch, 3))), None
+        bits = 16 if im.mode.startswith("I;16") else 32 if im.mode in ("I", "F") else 8
+        return ((h, w) if nch == 1 else (h, w, min(nch, 3))), None, bits
 
 
 # ----------------------------------------------------------------------------
@@ -538,15 +542,36 @@ def main(argv=None):
     # ---- pass 1: shapes -----------------------------------------------------
     for f in frames:
         try:
-            f.raw_shape, f.bayer = probe(f.path)
+            f.raw_shape, f.bayer, f.bits = probe(f.path)
         except Exception as e:
             f.status, f.note = "unreadable", str(e)[:80]
     lights = [f for f in frames if f.kind == "light" and f.status == "pending"]
-    darks = [f for f in frames if f.kind == "dark" and f.status == "pending"]
     if not lights:
         sys.exit("no readable light frames")
 
+    # Things that live next to the subs but are not subs: the scope's own
+    # finished stack, a stretched 8-bit preview, a thumbnail. They must not
+    # be stacked and above all must not become the reference frame.
+    NOT_A_SUB = ("preview", "thumb", "stacksum", "stacked", "master", "final")
+    major_bits = Counter(f.bits for f in lights).most_common(1)[0][0]
+    for f in lights:
+        name = os.path.basename(f.path).lower()
+        why = None
+        if any(w in name for w in NOT_A_SUB):
+            why = "not a sub, judging by its name"
+        elif f.bits == 8 and major_bits >= 16:
+            why = f"8-bit file among {major_bits}-bit subs (a preview, not data)"
+        if why:
+            f.kind, f.status, f.note = "skip", "skipped", why
+            log(f"skipping {os.path.basename(f.path)}: {why}")
+    lights = [f for f in lights if f.kind == "light"]
+    darks = [f for f in frames if f.kind == "dark" and f.status == "pending"]
+    if not lights:
+        sys.exit("no usable light frames")
+    log(f"  {len(lights)} subs to stack")
+
     sizes = Counter(f.raw_shape[:2] for f in lights)
+    major_shape = sizes.most_common(1)[0][0]
     if len(sizes) > 1:
         log("  frame sizes present (all will be used):")
         for shp, cnt in sizes.most_common():
@@ -598,16 +623,20 @@ def main(argv=None):
         ref_frame = usable[args.ref]
         ref_img = load_prepared(ref_frame)
     else:
-        probe_idx = np.linspace(0, len(usable) - 1, min(8, len(usable))).astype(int)
+        # only frames of the dominant size may be the reference: the output
+        # grid is the reference grid, and an odd-sized straggler must not
+        # decide the geometry for everyone else
+        cands = [f for f in usable if f.raw_shape[:2] == major_shape] or usable
+        probe_idx = np.linspace(0, len(cands) - 1, min(8, len(cands))).astype(int)
         best, best_n, best_img = None, -1, None
         for i in probe_idx:
             try:
-                img = load_prepared(usable[i])
+                img = load_prepared(cands[i])
                 n = star_count(luminance(img))
             except Exception:
                 continue
             if n > best_n:
-                best, best_n, best_img = usable[i], n, img
+                best, best_n, best_img = cands[i], n, img
         if best is None:
             sys.exit("could not read any frame to use as a reference")
         ref_frame, ref_img = best, best_img
