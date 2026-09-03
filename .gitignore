@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+# outputs — stacks are big, keep them out of the repo
+*.tif
+*.tiff
+*.fit
+*.fits
+*.csv
+starstack_*/
+# but keep the small README example image
+!docs/*.png
+
+# root-level previews / outputs from local runs
+/*.png

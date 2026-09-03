@@ -1,0 +1,8 @@
+numpy
+scipy
+astropy
+astroalign
+tifffile
+imagecodecs
+pillow
+opencv-python-headless
