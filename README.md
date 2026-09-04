@@ -66,8 +66,16 @@ evening. It reads what is there and gets on with it.
   on one diagonal; a mono or already-colour image doesn't. When it sees a
   mosaic it assumes RGGB (Unistellar, Seestar) and says so. Force with
   `--debayer RGGB`; `--debayer none` for frames that are already colour.
+- **Judges every frame and drops the bad ones.** Each sub gets measured
+  before it's warped: star count, background, noise, and a median star FWHM
+  in pixels. Frames that are blurry, cloudy or starved *relative to the rest
+  of the session* are dropped (never more than a quarter of them), and the
+  survivors are weighted by sharpness and noise so a crisp frame counts for
+  more than a soft one. No thresholds to tune — everything is relative to
+  the night you actually had. `--keep-all` and `--no-weights` if you disagree
+  with its judgement. All the numbers land in `--report`.
 - **Picks its own reference frame** — the one with the most detectable stars
-  out of a sample. Override with `--ref N`.
+  out of a sample of the dominant-size frames. Override with `--ref N`.
 - **Star-aligns** with astroalign (translation + rotation + scale), so
   untracked and dithered data is fine.
 - **Level-matches** every frame to the reference (median + spread) before
@@ -79,7 +87,8 @@ evening. It reads what is there and gets on with it.
 
 ## What it says while it works
 
-It narrates. Briefly, and with opinions.
+It narrates. Briefly, and with opinions. (Condensed from real runs on the
+M81 session — the quality lines are from a 40-frame slice of it.)
 
 ```
 713 lights, 1 dark. Fine.
@@ -91,8 +100,10 @@ master dark: 1 frame, median 0.03841. Subtracting it from everyone.
 no Bayer header, because TIFF. Looked at the pixels instead: it's a colour mosaic. Going with RGGB. If the galaxy comes out blue, --debayer BGGR.
 reference: 20260201T034056_007_StackInput.tiff (38 stars). Everyone else lines up to this one.
 scratch cube: 13.24 GB in C:\Users\you\AppData\Local\Temp\starstack_x1. It's temporary. Relax.
-  registering 710/710  kept 695
-combining 695 frames (sigma). Satellites, planes and cosmic rays: goodbye.
+  registering 40/40  kept 40
+  quality check: FWHM median 2.3 px, 19 stars per frame. Dropped 3 -- 3 blurry. They know what they did.
+  weighting the rest by sharpness and noise (0.8x to 1.2x).
+combining 37 frames (sigma). Satellites, planes and cosmic rays: goodbye.
 done. go outside.
 ```
 
@@ -119,6 +130,8 @@ fine), GraXpert, Photoshop, GIMP.
 |---|---|
 | `--darks PATH` | folder or glob of darks (in addition to name-detected ones) |
 | `--no-darks` | ignore darks entirely |
+| `--keep-all` | skip the quality pass; nobody gets dropped for being blurry |
+| `--no-weights` | every kept frame counts equally |
 | `--debayer RGGB\|BGGR\|GRBG\|GBRG\|none\|auto` | Bayer pattern (default auto) |
 | `--method sigma\|mean\|median` | combine method (default sigma) |
 | `--sigma 3.0` | clip threshold in MADs |
@@ -127,7 +140,7 @@ fine), GraXpert, Photoshop, GIMP.
 | `--max-frames N` | stop after N lights (quick test runs) |
 | `--bits 16\|32` | output bit depth |
 | `-j N` | worker processes (default: CPU count, max 8) |
-| `--report file.csv` | per-frame status |
+| `--report file.csv` | per-frame status, plus stars / FWHM / background / noise / weight |
 | `-q` | quiet |
 
 ## Disk and memory
@@ -176,7 +189,10 @@ The real thing: a 710-frame Unistellar Odyssey Pro session of M81, run on the
 folder untouched — `StackInput.tiff` lights, `DarkframeMean.tiff`,
 `StackSum.tiff`, `preview.jpg`, `manifest.json` and a stray Siril
 `master_dark.fit` all present. 695 frames aligned; the scope's own stacker
-had kept 412. Result at the top.
+had kept 412. Result at the top. The quality pass, tested on a 40-frame
+slice of the same session, flagged exactly the first three frames — FWHM
+5.1, 5.0 and 3.6 px against a 2.3 px median — which is the scope settling
+its focus at the start of the run. It found that on its own.
 
 Also a synthetic set, so the numbers can be checked: 40 dithered, rotated
 Bayer frames with 400 hot pixels, a satellite streak, three truncated frames

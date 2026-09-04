@@ -58,8 +58,14 @@ class Frame:
     bayer: str | None = None
     bits: int = 0                       # bits per sample on disk
     kind: str = "light"                 # light | dark | skip
-    status: str = "pending"             # used | unreadable | align | dark
+    status: str = "pending"             # used | unreadable | align | dark | quality
     note: str = ""
+    stars: int = 0                      # per-frame quality metrics (pre-warp)
+    fwhm: float = float("nan")
+    bg: float = float("nan")
+    noise: float = float("nan")
+    weight: float = 1.0
+    slot: int = -1                      # index in the scratch cube
 
 
 def _to_float(a: np.ndarray) -> np.ndarray:
@@ -239,6 +245,112 @@ def star_count(lum: np.ndarray) -> int:
         return int(((lum - med) > 8 * 1.4826 * mad).sum())
 
 
+def frame_metrics(lum: np.ndarray) -> dict:
+    """Per-frame quality: background, noise, star count and a median FWHM in
+    pixels from intensity-weighted second moments of star blobs. Cheap, and
+    it's what decides which frames are dragging the stack down."""
+    from scipy import ndimage as ndi
+    a = np.nan_to_num(lum.astype(np.float32))
+    samp = a.reshape(-1)[::5]
+    bg = float(np.median(samp))
+    noise = float(np.median(np.abs(samp - bg)) * 1.4826) + 1e-9
+    mask = a > bg + 5.0 * noise
+    lab, n = ndi.label(mask)
+    if n == 0:
+        return {"stars": 0, "fwhm": float("nan"), "bg": bg, "noise": noise}
+    idx = np.arange(1, n + 1)
+    area = ndi.sum(mask, lab, idx)
+    peak = ndi.maximum(a, lab, idx)
+    top = float(a.max())
+    ok = (area >= 4) & (area <= 400)
+    if top > 0:
+        ok &= peak < 0.98 * top                    # saturated stars lie about their width
+    sel = idx[ok]
+    if sel.size < 3:
+        return {"stars": int(sel.size), "fwhm": float("nan"), "bg": bg, "noise": noise}
+    # intensity-weighted second moments per blob -> sigma -> FWHM,
+    # computed inside each blob's bounding box only (whole-frame index
+    # arrays cost more than the rest of the pipeline)
+    objs = ndi.find_objects(lab)
+    sig = []
+    for i in sel:
+        sl = objs[i - 1]
+        if sl is None:
+            continue
+        sub = a[sl]; m = (lab[sl] == i)
+        w = np.where(m, sub - bg, 0.0).astype(np.float64)
+        s0 = w.sum()
+        if s0 <= 0:
+            continue
+        yy, xx = np.mgrid[sl[0], sl[1]]
+        mx = (w * xx).sum() / s0; my = (w * yy).sum() / s0
+        vx = (w * xx * xx).sum() / s0 - mx ** 2
+        vy = (w * yy * yy).sum() / s0 - my ** 2
+        sig.append(np.sqrt(max((vx + vy) / 2.0, 1e-6)))
+    if len(sig) < 3:
+        return {"stars": int(sel.size), "fwhm": float("nan"), "bg": bg, "noise": noise}
+    sig = np.array(sig)
+    fwhm = float(np.median(2.3548 * sig))
+    return {"stars": int(sel.size), "fwhm": fwhm, "bg": bg, "noise": noise}
+
+
+def assess_quality(frames: list, log, keep_all: bool, use_weights: bool):
+    """Decide which registered frames are dragging the stack down, and how
+    much the survivors should count. All thresholds are relative to the
+    session itself -- no absolute numbers to tune."""
+    have = [f for f in frames if np.isfinite(f.fwhm) and f.stars >= 3]
+    if len(have) < 10:
+        log("  quality check: too few frames to judge anyone. Everyone counts equally.")
+        return
+    fw = np.array([f.fwhm for f in have]); st = np.array([f.stars for f in have], float)
+    bg = np.array([f.bg for f in have]); nz = np.array([f.noise for f in have])
+    def rob(x):
+        m = float(np.median(x)); return m, float(np.median(np.abs(x - m)) * 1.4826) + 1e-9
+    fw_m, fw_s = rob(fw); st_m, _ = rob(st); bg_m, bg_s = rob(bg); nz_m, _ = rob(nz)
+
+    reasons = {}
+    if not keep_all:
+        for f in have:
+            if f.fwhm > fw_m + 2.5 * fw_s and f.fwhm > 1.15 * fw_m:
+                reasons[f.path] = ("blurry", f"blurry: FWHM {f.fwhm:.1f} px vs {fw_m:.1f} median")
+            elif f.stars < 0.5 * st_m:
+                reasons[f.path] = ("starved", f"starved: {f.stars} stars vs {st_m:.0f} median")
+            elif f.bg > bg_m + 3.0 * bg_s:
+                reasons[f.path] = ("cloudy", f"cloudy/bright: background {f.bg:.4f} vs {bg_m:.4f} median")
+        # never throw away more than a quarter of the session on a bad night
+        cap = int(0.25 * len(have))
+        if len(reasons) > cap:
+            worst = sorted(reasons, key=lambda p: -next(f.fwhm for f in have if f.path == p))[:cap]
+            reasons = {p: reasons[p] for p in worst}
+        for f in have:
+            if f.path in reasons:
+                f.status, f.note = "quality", reasons[f.path][1]
+    kept = [f for f in have if f.status == "used"] + [f for f in frames if f not in have and f.status == "used"]
+
+    if use_weights:
+        for f in kept:
+            if np.isfinite(f.fwhm) and f.noise > 0:
+                f.weight = float(np.clip((fw_m / f.fwhm) ** 2 * (nz_m / f.noise) ** 2, 0.2, 3.0))
+            else:
+                f.weight = 1.0
+        ws = np.array([f.weight for f in kept]); ws /= ws.mean()
+        for f, w in zip(kept, ws):
+            f.weight = float(w)
+
+    n_drop = len(reasons)
+    tally = Counter(r[0] for r in reasons.values())
+    line = f"  quality check: FWHM median {fw_m:.1f} px, {st_m:.0f} stars per frame."
+    if n_drop:
+        parts = ", ".join(f"{v} {k}" for k, v in tally.most_common())
+        line += f" Dropped {n_drop} -- {parts}. They know what they did."
+    else:
+        line += " Nobody dropped. Suspiciously well-behaved."
+    log(line)
+    if use_weights and kept:
+        ws = [f.weight for f in kept]
+        log(f"  weighting the rest by sharpness and noise ({min(ws):.1f}x to {max(ws):.1f}x).")
+
+
 def match_levels(img: np.ndarray, ref_med: float, ref_scale: float) -> np.ndarray:
     """Additive + multiplicative normalization so frames combine cleanly."""
     sample = img.reshape(-1)[::7]
@@ -354,38 +466,49 @@ def _process_one(args):
     try:
         img = _prepare(path)
     except Exception as e:
-        return idx, "unreadable", str(e)[:80], None
+        return idx, "unreadable", str(e)[:80], None, None
     ref_lum = _W["ref_lum"]
     note = ""
+    lum = luminance(img)
+    try:
+        metrics = frame_metrics(lum)          # measured before warping/normalizing
+    except Exception:
+        metrics = None
     if not is_ref:
         if _W["align"]:
             try:
                 import astroalign as aa
-                tform, _ = aa.find_transform(luminance(img), ref_lum)
+                tform, _ = aa.find_transform(lum, ref_lum)
                 img = warp_to_ref(tform, img, ref_lum.shape)
             except Exception as e:
-                return idx, "align", str(e)[:80], None
+                return idx, "align", str(e)[:80], None, metrics
         elif img.shape[:2] != ref_lum.shape:
             note = f"resized from {img.shape[1]}x{img.shape[0]}"
             img = crop_to(img, ref_lum.shape)
     if _W["normalize"]:
         img = match_levels(img, _W["ref_med"], _W["ref_scale"])
-    return idx, "used", note, img.astype(np.float32)
+    return idx, "used", note, img.astype(np.float32), metrics
 
 
 # ----------------------------------------------------------------------------
 # stacking
 # ----------------------------------------------------------------------------
 
-def sigma_clip_stack(mm: np.memmap, n: int, sigma: float, iters: int, chunk_rows: int):
-    """NaN-aware sigma-clipped mean over a memmapped (N, H, W[, C]) cube."""
+def sigma_clip_stack(mm: np.memmap, slots: list, weights: np.ndarray,
+                     sigma: float, iters: int, chunk_rows: int):
+    """NaN-aware, weighted, sigma-clipped mean over the chosen slots of a
+    memmapped (N, H, W[, C]) cube. Clipping decides which pixels count;
+    weights decide how much."""
     shape = mm.shape[1:]
     out = np.zeros(shape, np.float32)
     cov = np.zeros(shape[:2], np.uint16)
     h = shape[0]
+    slots = np.asarray(slots)
+    wshape = (len(slots),) + (1,) * len(shape)
+    wcol = np.asarray(weights, np.float32).reshape(wshape)
     for y0 in range(0, h, chunk_rows):
         y1 = min(y0 + chunk_rows, h)
-        block = np.array(mm[:n, y0:y1], dtype=np.float32)
+        block = np.array(mm[slots, y0:y1], dtype=np.float32)
         keep = np.isfinite(block)
         for _ in range(iters):
             work = np.where(keep, block, np.nan)
@@ -401,9 +524,10 @@ def sigma_clip_stack(mm: np.memmap, n: int, sigma: float, iters: int, chunk_rows
                 break
             keep = newkeep
         with np.errstate(all="ignore"):
-            cnt = keep.sum(axis=0)
-            summed = np.where(keep, block, 0.0).sum(axis=0)
-            out[y0:y1] = np.where(cnt > 0, summed / np.maximum(cnt, 1), np.nan)
+            wk = keep * wcol
+            wsum = wk.sum(axis=0)
+            summed = (np.where(keep, block, 0.0) * wcol).sum(axis=0)
+            out[y0:y1] = np.where(wsum > 0, summed / np.where(wsum > 0, wsum, 1), np.nan)
         cov[y0:y1] = (np.isfinite(block).sum(axis=0) if block.ndim == 3
                       else np.isfinite(block[..., 0]).sum(axis=0))
     return out, cov
@@ -456,6 +580,10 @@ def main(argv=None):
     p.add_argument("--darks", default=None,
                    help="folder or glob of dark frames (default: any file with 'dark' in its name)")
     p.add_argument("--no-darks", action="store_true", help="ignore dark frames entirely")
+    p.add_argument("--keep-all", action="store_true",
+                   help="skip the quality pass: no frame is dropped for being blurry, cloudy or starved")
+    p.add_argument("--no-weights", action="store_true",
+                   help="every kept frame counts equally instead of by sharpness and noise")
     p.add_argument("--max-frames", type=int, default=None)
     p.add_argument("--min-stars", type=int, default=8,
                    help="frames with fewer detected stars are not used as reference")
@@ -684,10 +812,12 @@ def main(argv=None):
     init_args = (master_dark, pattern, ref_lum, ref_med, ref_scale,
                  align, not args.no_normalize)
 
-    def _consume(idx, status, note, img):
+    def _consume(idx, status, note, img, metrics=None):
         nonlocal kept, cnt
         f = usable[idx]
         f.status, f.note = status, note
+        if metrics:
+            f.stars, f.fwhm, f.bg, f.noise = metrics["stars"], metrics["fwhm"], metrics["bg"], metrics["noise"]
         if img is None:
             return
         if streaming:
@@ -696,6 +826,7 @@ def main(argv=None):
             cnt += m
         else:
             mm[kept] = img
+            f.slot = kept
         kept += 1
 
     done = 0
@@ -703,8 +834,8 @@ def main(argv=None):
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=jobs, initializer=_worker_init,
                                  initargs=init_args) as ex:
-            for idx, status, note, img in ex.map(_process_one, tasks, chunksize=2):
-                _consume(idx, status, note, img)
+            for idx, status, note, img, metrics in ex.map(_process_one, tasks, chunksize=2):
+                _consume(idx, status, note, img, metrics)
                 done += 1
                 if not args.quiet and (done % 10 == 0 or done == len(tasks)):
                     print(f"\r  registering {done}/{len(tasks)}  kept {kept}", end="", flush=True)
@@ -721,21 +852,35 @@ def main(argv=None):
     if kept == 0:
         sys.exit("not one frame would align to the reference. Either these aren't the same sky, or there are no stars. Try --no-align if they're already registered.")
 
+    # ---- quality pass -------------------------------------------------------
+    registered = [f for f in usable if f.status == "used"]
+    if streaming:
+        log("  streaming mean: frames were summed as they came, so no quality pass. Everyone counts.")
+    else:
+        assess_quality(registered, log, keep_all=args.keep_all, use_weights=not args.no_weights)
+    final = [f for f in registered if f.status == "used"]
+    slots = [f.slot for f in final]
+    weights = np.array([f.weight for f in final], np.float32)
+    n_final = len(final) if not streaming else kept
+
     # ---- combine ------------------------------------------------------------
-    log(f"combining {kept} frames ({args.method}). " + ("Satellites, planes and cosmic rays: goodbye." if args.method == "sigma" else ""))
+    log(f"combining {n_final} frames ({args.method}). " + ("Satellites, planes and cosmic rays: goodbye." if args.method == "sigma" else ""))
     if streaming:
         with np.errstate(all="ignore"):
             stacked = (acc / np.maximum(cnt, 1)).astype(np.float32)
             stacked[cnt == 0] = np.nan
         coverage = cnt if cnt.ndim == 2 else cnt[..., 0]
     elif args.method == "median":
-        stacked = np.nanmedian(np.array(mm[:kept]), axis=0).astype(np.float32)
-        coverage = np.isfinite(np.array(mm[:kept])).sum(axis=0)
+        cube = np.array(mm[slots])
+        stacked = np.nanmedian(cube, axis=0).astype(np.float32)
+        coverage = np.isfinite(cube).sum(axis=0)
         coverage = coverage if coverage.ndim == 2 else coverage[..., 0]
+        del cube
     else:
         px = int(np.prod(out_shape[1:]))
-        chunk_rows = max(1, min(out_shape[0], int(256e6 / max(kept * px * 4, 1))))
-        stacked, coverage = sigma_clip_stack(mm, kept, args.sigma, args.iters, chunk_rows)
+        chunk_rows = max(1, min(out_shape[0], int(256e6 / max(len(slots) * px * 4, 1))))
+        stacked, coverage = sigma_clip_stack(mm, slots, weights, args.sigma, args.iters, chunk_rows)
+    kept = n_final
 
     stacked = np.nan_to_num(stacked, nan=0.0)
 
@@ -775,7 +920,7 @@ def main(argv=None):
     log("\n" + "-" * 46)
     log(f"  used          {tally['used']:>6}")
     for label, key in (("darks used", "dark"), ("unreadable", "unreadable"),
-                       ("align failed", "align"), ("skipped", "skipped")):
+                       ("align failed", "align"), ("quality drop", "quality"), ("skipped", "skipped")):
         if tally[key]:
             log(f"  {label:<13} {tally[key]:>6}")
     log(f"  output        {args.out}  {stacked.shape}")
@@ -788,12 +933,17 @@ def main(argv=None):
         import csv
         with open(args.report, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["file", "kind", "status", "note", "raw_shape"])
+            w.writerow(["file", "kind", "status", "note", "raw_shape",
+                        "stars", "fwhm_px", "background", "noise", "weight"])
             for f in frames:
-                w.writerow([os.path.basename(f.path), f.kind, f.status, f.note, f.raw_shape])
+                w.writerow([os.path.basename(f.path), f.kind, f.status, f.note, f.raw_shape,
+                            f.stars, f"{f.fwhm:.2f}" if np.isfinite(f.fwhm) else "",
+                            f"{f.bg:.5f}" if np.isfinite(f.bg) else "",
+                            f"{f.noise:.5f}" if np.isfinite(f.noise) else "",
+                            f"{f.weight:.2f}" if f.status == "used" else ""])
         log(f"per-frame report: {args.report}")
 
-    rejected = tally["unreadable"] + tally["align"]
+    rejected = tally["unreadable"] + tally["align"] + tally["quality"]
     if rejected and not args.quiet:
         print(f"\n{rejected} frame(s) wouldn't cooperate and were left out. "
               f"{'--report tells you which. ' if not args.report else 'They are in the report. '}"
