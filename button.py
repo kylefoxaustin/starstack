@@ -146,12 +146,35 @@ class App(tk.Tk):
 
         body = tk.PanedWindow(self, orient="vertical", bg=NAVY, sashwidth=6, sashrelief="flat")
         body.pack(fill="both", expand=True, padx=18, pady=(6, 10))
-        self.log = tk.Text(body, bg=INK, fg="#d5dae6", insertbackground=CREAM, relief="flat",
-                           font=MONO, wrap="word", state="disabled", padx=10, pady=8)
+        logbox = tk.Frame(body, bg=INK)
+        self.log = tk.Text(logbox, bg=INK, fg="#d5dae6", insertbackground=CREAM, relief="flat",
+                           font=MONO, wrap="word", state="disabled", padx=10, pady=8,
+                           cursor="arrow", takefocus=1)
+        sb = tk.Scrollbar(logbox, orient="vertical", command=self.log.yview,
+                          bg=NAVY2, troughcolor=INK, activebackground="#22304a", relief="flat", width=14)
+        self.log.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.log.pack(side="left", fill="both", expand=True)
         self.log.tag_configure("owl", foreground="#f0cf96")
         self.log.tag_configure("bad", foreground="#ff8a7a")
         self.log.tag_configure("good", foreground="#9be59b")
-        body.add(self.log, minsize=160)
+        # keyboard: click the log (or Tab to it) and use the arrows / PgUp / PgDn / Home / End.
+        # a disabled Text ignores keys, so drive the view ourselves.
+        keys = {"<Up>": ("scroll", -1, "units"), "<Down>": ("scroll", 1, "units"),
+                "<Prior>": ("scroll", -1, "pages"), "<Next>": ("scroll", 1, "pages"),
+                "<Home>": ("moveto", 0.0), "<End>": ("moveto", 1.0)}
+
+        def _nav(action):
+            def handler(_event):
+                if isinstance(self.focus_get(), tk.Entry):
+                    return None                 # typing a path: leave the keys alone
+                self.log.yview(*action)
+                return "break"
+            return handler
+        for key, action in keys.items():
+            self.bind_all(key, _nav(action))
+        self.log.bind("<Button-1>", lambda e: self.log.focus_set())
+        body.add(logbox, minsize=160)
         self.preview_frame = tk.Frame(body, bg=INK)
         self.preview_lbl = tk.Label(self.preview_frame, bg=INK, fg=MUTE, font=SANS,
                                     text="the picture shows up here")
@@ -199,6 +222,7 @@ class App(tk.Tk):
             self.mode_lbl.config(text="no images in there.")
 
     def say(self, text, tag=None):
+        at_bottom = self.log.yview()[1] >= 0.999
         self.log.configure(state="normal")
         if text.startswith("\r"):
             # progress line: replace the last line instead of appending
@@ -206,7 +230,8 @@ class App(tk.Tk):
             self.log.insert("end", "\n" + text[1:].rstrip("\n"), tag)
         else:
             self.log.insert("end", text, tag)
-        self.log.see("end")
+        if at_bottom:                      # follow the log unless the reader scrolled up
+            self.log.see("end")
         self.log.configure(state="disabled")
 
     def stack(self):

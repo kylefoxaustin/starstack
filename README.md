@@ -124,7 +124,10 @@ live log, picture. It runs `starstack.py` underneath, so the CLI stays the
 source of truth and the window is just a face. Nothing to install beyond
 Python's own tkinter. It knows the difference between one session and a
 whole night, names outputs after the target, and writes into a `stacked/`
-(one session) or `stacks/` (whole night) folder next to your frames.
+(one session) or `stacks/` (whole night) folder next to your frames. The log
+scrolls -- wheel, scrollbar, or arrows / PgUp / PgDn / Home / End -- and it
+stops following the output while you're reading back, then follows again
+once you hit End.
 
 <p align="center">
   <img src="docs/button_window.png" alt="the starstack window" width="640">
