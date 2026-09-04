@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starstack"
+version = "0.2.0"
+description = "Dump a folder of frames in. Push one button. Get a stacked astro image out."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Kyle Fox" }]
+requires-python = ">=3.10"
+keywords = ["astrophotography", "stacking", "astronomy", "unistellar", "seestar"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "Environment :: Console",
+]
+dependencies = [
+  "numpy",
+  "scipy",
+  "astropy",
+  "astroalign",
+  "tifffile",
+  "imagecodecs",
+  "pillow",
+  "opencv-python-headless",
+]
+
+[project.urls]
+Homepage = "https://github.com/kylefoxaustin/starstack"
+
+[project.scripts]
+starstack = "starstack:main"
+starstack-button = "button:main"
+
+[tool.setuptools]
+py-modules = ["starstack", "button"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

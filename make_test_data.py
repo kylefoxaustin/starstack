@@ -8,7 +8,8 @@ rng = np.random.default_rng(7)
 out = sys.argv[1] if len(sys.argv) > 1 else "testdata"
 os.makedirs(out, exist_ok=True)
 H, W = 1094, 1452
-N_LIGHT, N_DARK = 40, 8
+N_LIGHT = int(sys.argv[2]) if len(sys.argv) > 2 else 40     # smaller for CI
+N_DARK = 8
 
 # fixed pattern: hot pixels + bias
 hot = np.zeros((H, W), np.float32)
@@ -63,17 +64,17 @@ for i in range(N_LIGHT):
     th = np.deg2rad(rng.uniform(-1.5, 1.5))
     sky = bayer(render(dx, dy, th) * 0.5 + 0.06)   # mosaic modulates sky too, like a real OSC
     frame = sky + bias + hot + rng.normal(0, 0.012, (H, W)).astype(np.float32)
-    if i == 17:   # satellite streak
+    if i == min(17, N_LIGHT - 1):   # satellite streak
         for t in np.linspace(0, 1, 3000):
             y, x = int(200 + t * 600), int(100 + t * 1200)
             if 0 <= y < H and 0 <= x < W:
                 frame[y, x] += 0.7
-    if i in (36, 37, 38):   # truncated frames like Kyle's 1452x1088
+    if i in (N_LIGHT - 4, N_LIGHT - 3, N_LIGHT - 2):   # truncated frames like Kyle's 1452x1088
         frame = frame[:1088]
     write(os.path.join(out, f"milkway test_{i:05d}.fit"), to16(frame))
 
 # corrupt file
-with open(os.path.join(out, "milkway test_00039.fit"), "wb") as fh:
+with open(os.path.join(out, f"milkway test_{N_LIGHT:05d}.fit"), "wb") as fh:
     fh.write(b"SIMPLE  =                    T / garbage" + b"\x00" * 500)
 
 for i in range(N_DARK):

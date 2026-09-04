@@ -10,5 +10,11 @@ starstack_*/
 # but keep the small README example image
 !docs/*.png
 
+# packaging / test leftovers
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
 # root-level previews / outputs from local runs
 /*.png

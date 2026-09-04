@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
+__version__ = "0.2.0"
+
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
 # ----------------------------------------------------------------------------
@@ -569,6 +571,7 @@ def main(argv=None):
         description="Point it at a folder of frames. Push the button. Get one stacked image out. "
                     "No sequence files, no process folder, no opinions about your workflow.",
     )
+    p.add_argument("--version", action="version", version=f"starstack {__version__}")
     p.add_argument("folder", help="folder of frames (or a glob)")
     p.add_argument("-o", "--out", default="stacked.tif",
                    help="output file; .tif/.tiff or .fit/.fits (default: stacked.tif)")

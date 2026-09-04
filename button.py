@@ -364,5 +364,9 @@ class App(tk.Tk):
             self.say("\nstopped. fine.\n", "bad")
 
 
-if __name__ == "__main__":
+def main():
     App().mainloop()
+
+
+if __name__ == "__main__":
+    main()

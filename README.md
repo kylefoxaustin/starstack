@@ -2,6 +2,12 @@
   <img src="docs/banner.png" alt="starstack — stacking for people who'd rather be looking up" width="100%">
 </p>
 
+<p align="center">
+  <a href="https://github.com/kylefoxaustin/starstack/actions/workflows/ci.yml"><img src="https://github.com/kylefoxaustin/starstack/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="python 3.10+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+</p>
+
 Dump a folder of frames in. Push one button. Get a stacked image out.
 
 ```
@@ -223,7 +229,8 @@ temp directory and deleted when the run finishes. If that's too much,
 
 ## Install
 
-Python 3.10 or newer. Then, in a terminal (PowerShell is fine on Windows):
+Python 3.10 or newer. Either way works; the second gives you a `starstack`
+command you can run from anywhere.
 
 ```
 git clone https://github.com/kylefoxaustin/starstack
@@ -231,6 +238,16 @@ cd starstack
 pip install -r requirements.txt
 python starstack.py "C:\path\to\your\session folder" -o result.tif --bits 16 --preview look.png
 ```
+
+```
+pip install git+https://github.com/kylefoxaustin/starstack
+starstack "C:\path\to\your\session folder" -o result.tif --bits 16 --preview look.png
+starstack-button
+```
+
+`pytest -q` runs the test suite: unit tests for the Bayer detector, dark
+detection and session discovery, plus an end-to-end stack of a synthetic
+data set that checks the hot pixels actually died. CI runs it on every push.
 
 `make_test_data.py` generates a synthetic 40-frame Bayer data set (with
 darks, hot pixels, a satellite, truncated frames and a corrupt file) if you
