@@ -323,4 +323,4 @@ both brows come down and the ear tufts go up. He blinks. That's it.
 
 ## License
 
-MIT. Built by Kyle Fox with Claude, one very annoying evening with Siril.
+MIT. Built by Kyle Fox with Claude, after one very annoying evening with Siril.
