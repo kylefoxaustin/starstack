@@ -21,7 +21,9 @@ That's it. That's the workflow. No sequence files, no process folder, no
 Don't like terminals? **Drag the folder onto `STACK.bat`.** That's the
 whole button. (Or double-click it and pick a folder; `stack.sh` on
 Linux/macOS.) A window opens, the owl narrates, the picture shows up when
-it's done.
+it's done. Run `Put owl on Desktop.bat` once and you get a proper Desktop
+shortcut with the owl as its icon -- double-click to open, drag a folder
+onto it to stack.
 
 <p align="center">
   <img src="docs/m81_example.png" alt="M81 stacked with starstack from 710 Unistellar Odyssey Pro frames" width="820">

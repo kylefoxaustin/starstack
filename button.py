@@ -101,6 +101,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("starstack")
         self.configure(bg=NAVY)
+        self._set_icon()
         self.geometry("880x720")
         self.minsize(720, 560)
         self.proc = None
@@ -109,6 +110,19 @@ class App(tk.Tk):
         self.out_dir = None
         self._build()
         self.after(80, self._pump)
+
+    def _set_icon(self):
+        """The owl in the title bar and taskbar."""
+        ico = os.path.join(HERE, "docs", "starstack.ico")
+        png = os.path.join(HERE, "docs", "icon_256.png")
+        try:
+            if sys.platform.startswith("win") and os.path.exists(ico):
+                self.iconbitmap(default=ico)
+            elif os.path.exists(png):
+                self._icon_img = tk.PhotoImage(file=png)
+                self.iconphoto(True, self._icon_img)
+        except tk.TclError:
+            pass
 
     # ---- layout -------------------------------------------------------------
     def _build(self):
