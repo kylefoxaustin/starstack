@@ -16,7 +16,8 @@ import threading
 import tkinter as tk
 from tkinter import filedialog
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+FROZEN = getattr(sys, "frozen", False)                 # running as starstack.exe
+HERE = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 STARSTACK = os.path.join(HERE, "starstack.py")
 IMAGE_EXT = {".tif", ".tiff", ".fit", ".fits", ".fts", ".png", ".jpg", ".jpeg"}
 
@@ -321,7 +322,10 @@ class App(tk.Tk):
         else:
             self.say("no image files in that folder.\n", "bad"); return
 
-        cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), "-u", STARSTACK, f, "-o", out_arg]
+        if FROZEN:
+            cmd = [sys.executable, "--cli", f, "-o", out_arg]   # the exe, in CLI mode
+        else:
+            cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), "-u", STARSTACK, f, "-o", out_arg]
         if self.preview_path:
             cmd += ["--preview", self.preview_path]
         if self.bits16.get():
@@ -341,8 +345,9 @@ class App(tk.Tk):
     def _run(self, cmd):
         try:
             flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+            env = dict(os.environ, PYTHONUNBUFFERED="1")
             self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         text=True, bufsize=1, creationflags=flags, errors="replace")
+                                         text=True, bufsize=1, creationflags=flags, errors="replace", env=env)
         except Exception as e:
             self.q.put(("line", f"couldn't start starstack: {e}\n")); self.q.put(("done", 1)); return
         buf = ""

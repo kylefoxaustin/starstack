@@ -1,0 +1,30 @@
+name: release
+
+# Push a tag like v0.2.0 and this builds starstack.exe on Windows and
+# attaches it to a GitHub Release. No installer; one file with the owl on it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller --noconfirm --clean starstack.spec
+      - run: |
+          $v = "${{ github.ref_name }}"
+          Copy-Item dist\starstack.exe "dist\starstack-$v-windows.exe"
+        shell: pwsh
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/starstack-*-windows.exe
+          generate_release_notes: true

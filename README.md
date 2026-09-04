@@ -260,7 +260,20 @@ temp directory and deleted when the run finishes. If that's too much,
 
 ## Install
 
-Python 3.10 or newer. Either way works; the second gives you a `starstack`
+**Just want the button?** Grab `starstack-<version>-windows.exe` from the
+[Releases](https://github.com/kylefoxaustin/starstack/releases) page. One
+file, the owl is its icon, Python and everything else are inside it. Put it
+anywhere. Double-click to open; drag a folder onto it to stack. It's big
+(a couple hundred MB -- numpy, scipy and friends are in there) and the first
+launch takes a few seconds while it unpacks itself. No installer, nothing
+in the registry, delete the file and it's gone. `starstack.exe --cli ...`
+is the full command line, same flags as below.
+
+To build that exe yourself: `build_exe.bat` (needs Python; it installs
+PyInstaller and produces `dist\starstack.exe`). Releases are built by
+GitHub Actions on a Windows runner whenever a `v*` tag is pushed.
+
+**Have Python?** Either way works; the second gives you a `starstack`
 command you can run from anywhere.
 
 ```
