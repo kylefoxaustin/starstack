@@ -135,8 +135,8 @@ once you hit End.
 
 ## What it says while it works
 
-It narrates. Briefly, and with opinions. (Condensed from real runs on the
-M81 session — the quality lines are from a 40-frame slice of it.)
+It narrates. Briefly, and with opinions. (Condensed from the real 710-frame
+M81 run.)
 
 ```
 713 lights, 1 dark. Fine.
@@ -148,10 +148,12 @@ master dark: 1 frame, median 0.03841. Subtracting it from everyone.
 no Bayer header, because TIFF. Looked at the pixels instead: it's a colour mosaic. Going with RGGB. If the galaxy comes out blue, --debayer BGGR.
 reference: 20260201T034056_007_StackInput.tiff (38 stars). Everyone else lines up to this one.
 scratch cube: 13.24 GB in C:\Users\you\AppData\Local\Temp\starstack_x1. It's temporary. Relax.
-  registering 40/40  kept 40
-  quality check: FWHM median 2.3 px, 19 stars per frame. Dropped 3 -- 3 blurry. They know what they did.
-  weighting the rest by sharpness and noise (0.8x to 1.2x).
-combining 37 frames (sigma). Satellites, planes and cosmic rays: goodbye.
+  registering 710/710  kept 706
+  quality check: FWHM median 2.3 px, 20 stars per frame. Dropped 30 -- 30 blurry. They know what they did.
+  weighting the rest by sharpness and noise (0.8x to 1.5x).
+combining 676 frames (sigma). This is the slow part -- every pixel gets a vote and the outliers get thrown out. Satellites, planes, cosmic rays: your time is coming.
+  combining rows 1094/1094  (100%)  outliers: gone.
+writing stacked\M81 - Bode's Galaxy.tif
 done. go outside.
 ```
 
@@ -240,10 +242,11 @@ The real thing: a 710-frame Unistellar Odyssey Pro session of M81, run on the
 folder untouched — `StackInput.tiff` lights, `DarkframeMean.tiff`,
 `StackSum.tiff`, `preview.jpg`, `manifest.json` and a stray Siril
 `master_dark.fit` all present. 695 frames aligned; the scope's own stacker
-had kept 412. Result at the top. The quality pass, tested on a 40-frame
-slice of the same session, flagged exactly the first three frames — FWHM
-5.1, 5.0 and 3.6 px against a 2.3 px median — which is the scope settling
-its focus at the start of the run. It found that on its own.
+had kept 412. Result at the top. With the quality pass on, 706 of 710
+aligned, 30 were dropped as blurry against a 2.3 px FWHM median — the first
+three of them are the scope settling its focus at the start of the run, at
+5.1, 5.0 and 3.6 px — and 676 went into the stack, weighted 0.8× to 1.5×.
+It worked all of that out on its own.
 
 Also a synthetic set, so the numbers can be checked: 40 dithered, rotated
 Bayer frames with 400 hot pixels, a satellite streak, three truncated frames

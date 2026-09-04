@@ -496,7 +496,7 @@ def _process_one(args):
 # ----------------------------------------------------------------------------
 
 def sigma_clip_stack(mm: np.memmap, slots: list, weights: np.ndarray,
-                     sigma: float, iters: int, chunk_rows: int):
+                     sigma: float, iters: int, chunk_rows: int, progress=None):
     """NaN-aware, weighted, sigma-clipped mean over the chosen slots of a
     memmapped (N, H, W[, C]) cube. Clipping decides which pixels count;
     weights decide how much."""
@@ -509,6 +509,8 @@ def sigma_clip_stack(mm: np.memmap, slots: list, weights: np.ndarray,
     wcol = np.asarray(weights, np.float32).reshape(wshape)
     for y0 in range(0, h, chunk_rows):
         y1 = min(y0 + chunk_rows, h)
+        if progress:
+            progress(y0, h)
         block = np.array(mm[slots, y0:y1], dtype=np.float32)
         keep = np.isfinite(block)
         for _ in range(iters):
@@ -954,7 +956,9 @@ def run(args):
     n_final = len(final) if not streaming else kept
 
     # ---- combine ------------------------------------------------------------
-    log(f"combining {n_final} frames ({args.method}). " + ("Satellites, planes and cosmic rays: goodbye." if args.method == "sigma" else ""))
+    log(f"combining {n_final} frames ({args.method}). This is the slow part"
+        + (" -- every pixel gets a vote and the outliers get thrown out. Satellites, planes, cosmic rays: your time is coming."
+           if args.method == "sigma" else "."))
     if streaming:
         with np.errstate(all="ignore"):
             stacked = (acc / np.maximum(cnt, 1)).astype(np.float32)
@@ -969,12 +973,25 @@ def run(args):
     else:
         px = int(np.prod(out_shape[1:]))
         chunk_rows = max(1, min(out_shape[0], int(256e6 / max(len(slots) * px * 4, 1))))
-        stacked, coverage = sigma_clip_stack(mm, slots, weights, args.sigma, args.iters, chunk_rows)
+        t_comb = time.time()
+
+        def _prog(y, h):
+            if args.quiet:
+                return
+            eta = ""
+            if y > 0:
+                left = (time.time() - t_comb) * (h - y) / y
+                eta = f"  about {int(left // 60)}m{int(left % 60):02d}s left" if left >= 60 else f"  about {int(left)}s left"
+            print(f"\r  combining rows {y}/{h}  ({100 * y // h}%){eta}      ", end="", flush=True)
+        stacked, coverage = sigma_clip_stack(mm, slots, weights, args.sigma, args.iters, chunk_rows, _prog)
+        if not args.quiet:
+            print(f"\r  combining rows {out_shape[0]}/{out_shape[0]}  (100%)  outliers: gone.")
     kept = n_final
 
     stacked = np.nan_to_num(stacked, nan=0.0)
 
     # ---- write --------------------------------------------------------------
+    log(f"writing {args.out}")
     ext = os.path.splitext(args.out)[1].lower()
     if args.bits == 16:
         # linear data on the 0..1 scale -> full 16-bit range; nothing is stretched
