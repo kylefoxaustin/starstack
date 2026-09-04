@@ -140,13 +140,27 @@ class App(tk.Tk):
     # ---- layout -------------------------------------------------------------
     def _build(self):
         top = tk.Frame(self, bg=NAVY); top.pack(fill="x", padx=18, pady=(14, 6))
-        owl_path = os.path.join(HERE, "docs", "owl_256.png")
-        if os.path.exists(owl_path):
-            try:
-                self.owl = tk.PhotoImage(file=owl_path).subsample(2, 2)
-                tk.Label(top, image=self.owl, bg=NAVY).pack(side="left", padx=(0, 14))
-            except tk.TclError:
-                pass
+        # the owl has degrees of grumpy. he does not have a smile.
+        self.faces = {}
+        for name in ("grumpy", "focused", "waiting", "judging", "grudging", "furious", "blink"):
+            p = os.path.join(HERE, "docs", "faces", f"owl_{name}.png")
+            if os.path.exists(p):
+                try:
+                    self.faces[name] = tk.PhotoImage(file=p)
+                except tk.TclError:
+                    pass
+        if not self.faces:
+            owl_path = os.path.join(HERE, "docs", "owl_256.png")
+            if os.path.exists(owl_path):
+                try:
+                    self.faces["grumpy"] = tk.PhotoImage(file=owl_path).subsample(2, 2)
+                except tk.TclError:
+                    pass
+        self.face_lbl = tk.Label(top, bg=NAVY)
+        self.face_lbl.pack(side="left", padx=(0, 14))
+        self.face = None
+        self._blink_job = None
+        self.set_face("grumpy")
         words = tk.Frame(top, bg=NAVY); words.pack(side="left", fill="x", expand=True)
         tk.Label(words, text="starstack", fg=CREAM, bg=NAVY, font=(SANS[0], 30, "bold")).pack(anchor="w")
         tk.Label(words, text="Stacking for people who'd rather be looking up.", fg="#c9cfe0", bg=NAVY, font=SANS).pack(anchor="w")
@@ -229,6 +243,31 @@ class App(tk.Tk):
             self.folder.set(sys.argv[1])
             self.after(600, self.stack)
 
+    # ---- the face -----------------------------------------------------------
+    def set_face(self, name):
+        img = self.faces.get(name) or self.faces.get("grumpy")
+        if img is not None:
+            self.face_lbl.config(image=img)
+        if name != "blink":
+            self.face = name
+            self._face_seq = getattr(self, "_face_seq", 0) + 1
+
+    def _blink(self):
+        """Every few seconds while working, so he reads as alive, not a sticker."""
+        self._blink_job = None
+        if self.button.enabled or self.face == "waiting" or "blink" not in self.faces:
+            return
+        current = self.face
+        self.set_face("blink")
+        self.after(110, lambda: self.set_face(current))
+        self._schedule_blink()
+
+    def _schedule_blink(self):
+        import random
+        if self._blink_job:
+            self.after_cancel(self._blink_job)
+        self._blink_job = self.after(random.randint(2500, 6000), self._blink)
+
     # ---- behaviour ----------------------------------------------------------
     def browse(self):
         d = filedialog.askdirectory(title="Folder of frames, or a folder of session folders")
@@ -295,6 +334,8 @@ class App(tk.Tk):
         self.preview_lbl.config(image="", text="working…")
         self.button.set_enabled(False); self.stop_btn.config(state="normal"); self.open_btn.config(state="disabled")
         self.status.config(text="stacking…")
+        self.set_face("focused")
+        self._schedule_blink()
         threading.Thread(target=self._run, args=(cmd,), daemon=True).start()
 
     def _run(self, cmd):
@@ -336,20 +377,51 @@ class App(tk.Tk):
                     elif text.startswith("  used") or text.startswith("  output"):
                         tag = "good"
                     self.say(text, tag)
+                    self._react(low)
                 else:
                     self._finished(payload)
         except queue.Empty:
             pass
         self.after(80, self._pump)
 
+    def _glance(self, name, back, ms):
+        """Pull a face for a moment, then return to `back` -- unless something
+        else changed his mood in the meantime."""
+        self.set_face(name)
+        seq = self._face_seq
+
+        def revert():
+            if self._face_seq == seq and not self.button.enabled:
+                self.set_face(back)
+        self.after(ms, revert)
+
+    def _react(self, low):
+        """Which grumpy, based on what the owl just said."""
+        if low.startswith("  registering") or "reference:" in low or "debayering" in low:
+            if self.face != "focused":
+                self.set_face("focused")
+        elif "combining" in low:
+            if self.face != "waiting":
+                self.set_face("waiting")        # eyes shut. wake him when it's over.
+        elif "dropped" in low and "quality check" in low:
+            self._glance("judging", "focused", 3000)
+        elif "removed it from the pile" in low or "not mixing pipelines" in low:
+            self._glance("judging", "focused", 2000)
+        elif "writing " in low:
+            self.set_face("focused")
+
     def _finished(self, rc):
         self.button.set_enabled(True); self.stop_btn.config(state="disabled")
         self.open_btn.config(state="normal")
+        if self._blink_job:
+            self.after_cancel(self._blink_job); self._blink_job = None
         if rc == 0:
             self.status.config(text="done. go outside.")
+            self.set_face("grudging")           # the most he will give you
             self._show_preview()
         else:
             self.status.config(text=f"stopped (exit {rc}). read the log.")
+            self.set_face("furious")
             self.preview_lbl.config(image="", text="no picture this time")
 
     def _on_resize(self, _):

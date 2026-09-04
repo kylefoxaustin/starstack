@@ -311,9 +311,15 @@ Bayer frames with 400 hot pixels, a satellite streak, three truncated frames
 
 ## The owl
 
-The owl is grumpy because it has read the Siril documentation. The thermos is
+The owl is grumpy because he has read the Siril documentation. The thermos is
 coffee. The button does the one thing. The SVG sources are in `brand/` and
 they're yours to put on a mug.
+
+In the window he has degrees of grumpy, never a smile: concentrating while
+frames register, eyes shut for the slow combine (wake him when it's over),
+one eyebrow up when the quality pass throws frames out, and at the end the
+most he'll give you is a fractional lift of the brows. If the run fails,
+both brows come down and the ear tufts go up. He blinks. That's it.
 
 ## License
 
