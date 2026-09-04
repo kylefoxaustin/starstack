@@ -586,6 +586,9 @@ def main(argv=None):
     p.add_argument("--darks", default=None,
                    help="folder or glob of dark frames (default: any file with 'dark' in its name)")
     p.add_argument("--no-darks", action="store_true", help="ignore dark frames entirely")
+    p.add_argument("--sort", action="store_true",
+                   help="don't stack: sort a one-pile folder into lights/ darks/ flats/ bias/ extras/ and stop")
+    p.add_argument("--dry-run", action="store_true", help="with --sort: show the plan, move nothing")
     p.add_argument("--keep-all", action="store_true",
                    help="skip the quality pass: no frame is dropped for being blurry, cloudy or starved")
     p.add_argument("--no-weights", action="store_true",
@@ -602,6 +605,16 @@ def main(argv=None):
     p.add_argument("-q", "--quiet", action="store_true")
     args = p.parse_args(argv)
 
+    if args.sort:
+        log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+        sessions = find_sessions(args.folder)
+        if sessions:
+            rc = 0
+            for sess in sessions:
+                rc |= sort_folder(sess, args.dry_run, log)
+            return rc
+        return sort_folder(args.folder, args.dry_run, log)
+
     sessions = find_sessions(args.folder)
     if sessions:
         return run_batch(args, sessions)
@@ -615,15 +628,113 @@ def _has_images(folder: str) -> bool:
         return False
 
 
+LAYOUT_DIRS = {"lights": "light", "light": "light", "darks": "dark", "dark": "dark",
+               "flats": "flat", "flat": "flat", "bias": "bias", "biases": "bias",
+               "offset": "bias", "darkflats": "darkflat", "dark_flats": "darkflat",
+               "flat_darks": "darkflat", "flatdarks": "darkflat"}
+FLAT_WORDS = ("flat",)
+BIAS_WORDS = ("bias", "offset")
+EXTRA_WORDS = ("preview", "thumb", "stacksum", "stacked", "final")
+
+
+def layout_dirs(folder: str) -> dict:
+    """Seestar-style layout: {kind: subfolder} for lights/darks/flats/bias
+    subfolders that exist and hold images. Empty dict if it isn't one."""
+    found = {}
+    try:
+        for d in os.listdir(folder):
+            kind = LAYOUT_DIRS.get(d.lower())
+            p = os.path.join(folder, d)
+            if kind and os.path.isdir(p) and _has_images(p):
+                found[kind] = p
+    except OSError:
+        pass
+    return found if "light" in found else {}
+
+
+def classify_name(path: str) -> str:
+    """What a frame is, judging only by its filename: light | dark | flat |
+    bias | darkflat | extra. Used by --sort and by the reader."""
+    n = os.path.basename(path).lower()
+    if any(w in n for w in EXTRA_WORDS):
+        return "extra"
+    is_dark = looks_like_dark(path)
+    is_flat = any(w in n for w in FLAT_WORDS)
+    if is_dark and is_flat:
+        return "darkflat"
+    if any(w in n for w in BIAS_WORDS):
+        return "bias"
+    if is_dark:
+        return "dark"
+    if is_flat:
+        return "flat"
+    return "light"
+
+
+def sort_folder(folder: str, dry_run: bool, log) -> int:
+    """Move a one-pile scope dump into lights/ darks/ flats/ bias/ extras/
+    subfolders -- the layout every stacker understands. manifest.json and
+    anything that isn't an image stay where they are."""
+    if layout_dirs(folder):
+        log("already sorted. Nothing to do. You're welcome anyway.")
+        return 0
+    names = sorted(f for f in os.listdir(folder)
+                   if os.path.splitext(f)[1].lower() in IMAGE_EXT
+                   and os.path.isfile(os.path.join(folder, f)))
+    if not names:
+        sys.exit(f"no image files in {folder}. Nothing to sort.")
+    dest_for = {"light": "lights", "dark": "darks", "flat": "flats", "bias": "bias",
+                "darkflat": "darkflats", "extra": "extras"}
+    plan = {}
+    for n in names:
+        kind = classify_name(n)
+        if kind == "light":
+            # a lone 8-bit file among 16-bit subs is a preview, not a light
+            try:
+                _, _, bits = probe(os.path.join(folder, n))
+            except Exception:
+                bits = 0
+            if bits == 8 and n.lower().endswith((".jpg", ".jpeg")):
+                kind = "extra"
+        plan.setdefault(dest_for[kind], []).append(n)
+    log(f"sorting {folder}" + (" (dry run -- nothing moves)" if dry_run else ""))
+    for sub in ("lights", "darks", "flats", "darkflats", "bias", "extras"):
+        if sub in plan:
+            ex = plan[sub]
+            log(f"  {sub:<10} {len(ex):>5}   e.g. {ex[0]}" + (f" .. {ex[-1]}" if len(ex) > 1 else ""))
+    if "lights" not in plan:
+        log("  no lights in here. That would be a very short stack. Not sorting.")
+        return 1
+    if dry_run:
+        log("dry run. Run again without --dry-run to move them.")
+        return 0
+    moved = 0
+    for sub, files in plan.items():
+        d = os.path.join(folder, sub)
+        os.makedirs(d, exist_ok=True)
+        for n in files:
+            src, dst = os.path.join(folder, n), os.path.join(d, n)
+            if os.path.exists(dst):
+                log(f"  {n}: already in {sub}/. Left alone.")
+                continue
+            os.replace(src, dst)
+            moved += 1
+    log(f"moved {moved} files into {', '.join(sorted(plan))}. "
+        f"The stragglers (manifest, csv, whatever) stayed put. Point any stacker at it now.")
+    return 0
+
+
 def find_sessions(folder: str):
     """Whole-night mode: a folder that holds no frames itself but has
     subfolders that do (an Odyssey `unistellar_observations` download, a
     night's worth of Seestar targets). Returns the session folders, or []."""
     if any(ch in folder for ch in "*?[") or not os.path.isdir(folder) or _has_images(folder):
         return []
+    if layout_dirs(folder):                     # lights/ darks/ ... = one session
+        return []
     subs = sorted(os.path.join(folder, d) for d in os.listdir(folder)
                   if os.path.isdir(os.path.join(folder, d)))
-    return [d for d in subs if _has_images(d)]
+    return [d for d in subs if _has_images(d) or layout_dirs(d)]
 
 
 def session_name(folder: str) -> str:
@@ -696,17 +807,33 @@ def run(args):
 
     # ---- discover -----------------------------------------------------------
     import glob as _glob
-    if any(ch in args.folder for ch in "*?["):
+    layout = {} if any(ch in args.folder for ch in "*?[") else layout_dirs(args.folder)
+    if layout:
+        # Seestar-style: lights/ darks/ (flats/ bias/) subfolders
+        def _imgs(d):
+            return sorted(os.path.join(d, f) for f in os.listdir(d)
+                          if os.path.splitext(f)[1].lower() in IMAGE_EXT)
+        paths = _imgs(layout["light"])
+        frames = [Frame(path=p_) for p_ in paths]
+        if "dark" in layout and not args.no_darks:
+            frames += [Frame(path=p_, kind="dark") for p_ in _imgs(layout["dark"])]
+        found = ", ".join(f"{os.path.basename(v)}/" for v in layout.values())
+        log(f"sorted layout: {found}. Someone raised this scope right.")
+        for extra in ("flat", "bias", "darkflat"):
+            if extra in layout:
+                log(f"  {os.path.basename(layout[extra])}/ noted; not applied yet (flats are next on the list).")
+    elif any(ch in args.folder for ch in "*?["):
         paths = sorted(_glob.glob(args.folder))
+        frames = [Frame(path=p_) for p_ in paths]
     else:
         paths = sorted(
             os.path.join(args.folder, f)
             for f in os.listdir(args.folder)
             if os.path.splitext(f)[1].lower() in IMAGE_EXT
         )
+        frames = [Frame(path=p_) for p_ in paths]
     if not paths:
         sys.exit(f"no image files in {args.folder}. Nothing to stack. Check the path.")
-    frames = [Frame(path=p_) for p_ in paths]
 
     # darks: by name, plus anything under --darks
     if args.darks:

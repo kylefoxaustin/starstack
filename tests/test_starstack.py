@@ -57,6 +57,55 @@ def test_find_sessions_ignores_folders_without_images(tmp_path):
     assert ss.find_sessions(str(tmp_path / "a")) == []   # a folder of frames is not a night
 
 
+def test_classify_names():
+    assert ss.classify_name("20260201T033719_987_StackInput.tiff") == "light"
+    assert ss.classify_name("20260201T033720_070_DarkframeMean.tiff") == "dark"
+    assert ss.classify_name("20260201T042554_221_StackSum.tiff") == "extra"
+    assert ss.classify_name("preview.jpg") == "extra"
+    assert ss.classify_name("flat_0001.fit") == "flat"
+    assert ss.classify_name("bias_0001.fit") == "bias"
+    assert ss.classify_name("dark_flat_0001.fit") == "darkflat"
+
+
+def _fake_frames(d, n, prefix="sub", dark=0):
+    from astropy.io import fits
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        fits.PrimaryHDU(np.full((8, 8), 100, np.uint16)).writeto(d / f"{prefix}_{i:03d}.fit")
+    for i in range(dark):
+        fits.PrimaryHDU(np.full((8, 8), 5, np.uint16)).writeto(d / f"darkframe_{i:03d}.fit")
+
+
+def test_sorted_layout_is_one_session_and_darks_are_not_a_target(tmp_path):
+    m13 = tmp_path / "M13"
+    _fake_frames(m13 / "lights", 3)
+    _fake_frames(m13 / "darks", 0, dark=2)
+    assert ss.layout_dirs(str(m13)).keys() == {"light", "dark"}
+    assert ss.find_sessions(str(m13)) == []                       # not a night of two targets
+    m27 = tmp_path / "M27"
+    _fake_frames(m27 / "lights", 3)
+    found = [os.path.basename(p) for p in ss.find_sessions(str(tmp_path))]
+    assert found == ["M13", "M27"]
+
+
+def test_sort_folder_moves_the_pile_into_subfolders(tmp_path):
+    d = tmp_path / "dump"
+    _fake_frames(d, 4, prefix="StackInput", dark=1)
+    from astropy.io import fits
+    fits.PrimaryHDU(np.zeros((6, 8), np.uint16)).writeto(d / "StackSum.fit")
+    (d / "manifest.json").write_text("{}")
+    lines = []
+    assert ss.sort_folder(str(d), dry_run=True, log=lines.append) == 0
+    assert not (d / "lights").exists()                            # dry run moved nothing
+    assert ss.sort_folder(str(d), dry_run=False, log=lines.append) == 0
+    assert sorted(os.listdir(d / "lights")) == [f"StackInput_{i:03d}.fit" for i in range(4)]
+    assert os.listdir(d / "darks") == ["darkframe_000.fit"]
+    assert os.listdir(d / "extras") == ["StackSum.fit"]
+    assert (d / "manifest.json").exists()                         # stayed put
+    assert ss.layout_dirs(str(d)).keys() == {"light", "dark"}
+    assert ss.sort_folder(str(d), dry_run=False, log=lines.append) == 0   # idempotent
+
+
 # ------------------------------------------------------------ end to end ----
 @pytest.fixture(scope="module")
 def synthetic(tmp_path_factory):

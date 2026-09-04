@@ -125,6 +125,34 @@ Each target gets a `.tif`, a `_look.png` preview and (with `--report`) a
 session folder. One session failing does not sink the night. The output
 folder from a previous run is recognised and not mistaken for a session.
 
+## Sorted folders, and sorting one
+
+Seestar saves a target as `lights/` and `darks/` subfolders. starstack reads
+that layout as one session -- lights from `lights/`, darks from `darks/`,
+and a `flats/` or `bias/` folder is noticed (flats are next). A folder of
+such targets is a night, same as an Odyssey download.
+
+The Odyssey does the opposite: one pile, everything in it. If you'd rather
+have the tidy layout -- for starstack, for Siril, for anything -- there's a
+sort:
+
+```
+python starstack.py "20260201T033715_387" --sort --dry-run   # shows the plan
+python starstack.py "20260201T033715_387" --sort             # does it
+
+sorting 20260201T033715_387
+  lights       710   e.g. 20260201T033719_987_StackInput.tiff .. 20260201T042552_246_StackInput.tiff
+  darks          1   e.g. 20260201T033720_070_DarkframeMean.tiff
+  extras         2   e.g. 20260201T042554_221_StackSum.tiff .. preview.jpg
+moved 713 files into darks, extras, lights. The stragglers (manifest, csv, whatever) stayed put. Point any stacker at it now.
+```
+
+It classifies by the same rules the stacker uses, moves files into
+`lights/ darks/ flats/ bias/ darkflats/ extras/` inside the same folder,
+leaves `manifest.json` and anything that isn't an image where it was, never
+copies, and prints every group so it's reversible. Run it on a whole night
+and every session gets sorted. Run it twice and it shrugs.
+
 ## The button
 
 `button.py` is the Big Red Button as a window: folder picker, STACK,
@@ -199,6 +227,7 @@ fine), GraXpert, Photoshop, GIMP.
 | `--bits 16\|32` | output bit depth |
 | `-j N` | worker processes (default: CPU count, max 8) |
 | `--report file.csv` | per-frame status, plus stars / FWHM / background / noise / weight |
+| `--sort` / `--sort --dry-run` | sort a one-pile folder into lights/ darks/ ... and stop |
 | `-q` | quiet |
 
 Point `folder` at a parent of session folders instead and you get whole-night

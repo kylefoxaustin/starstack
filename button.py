@@ -33,11 +33,24 @@ def has_images(folder):
         return False
 
 
+def is_sorted(folder):
+    """Seestar-style layout: a lights/ subfolder with frames in it."""
+    for d in ("lights", "light"):
+        p = os.path.join(folder, d)
+        if os.path.isdir(p) and has_images(p):
+            return True
+    return False
+
+
+def is_session(folder):
+    return os.path.isdir(folder) and (has_images(folder) or is_sorted(folder))
+
+
 def is_night(folder):
     """A folder of session folders rather than a folder of frames."""
-    if not os.path.isdir(folder) or has_images(folder):
+    if not os.path.isdir(folder) or is_session(folder):
         return False
-    return any(has_images(os.path.join(folder, d)) for d in os.listdir(folder)
+    return any(is_session(os.path.join(folder, d)) for d in os.listdir(folder)
                if os.path.isdir(os.path.join(folder, d)))
 
 
@@ -227,8 +240,12 @@ class App(tk.Tk):
         if not os.path.isdir(f):
             self.mode_lbl.config(text=""); return
         if is_night(f):
-            n = sum(1 for d in os.listdir(f) if os.path.isdir(os.path.join(f, d)) and has_images(os.path.join(f, d)))
+            n = sum(1 for d in os.listdir(f) if is_session(os.path.join(f, d)))
             self.mode_lbl.config(text=f"whole night: {n} session folders. One press does all of them.")
+        elif is_sorted(f):
+            ld = os.path.join(f, "lights" if os.path.isdir(os.path.join(f, "lights")) else "light")
+            n = sum(1 for x in os.listdir(ld) if os.path.splitext(x)[1].lower() in IMAGE_EXT)
+            self.mode_lbl.config(text=f"sorted layout, {n} lights. Output: {target_name(f)}.tif")
         elif has_images(f):
             n = sum(1 for x in os.listdir(f) if os.path.splitext(x)[1].lower() in IMAGE_EXT)
             self.mode_lbl.config(text=f"{n} image files. Output: {target_name(f)}.tif")
@@ -256,7 +273,7 @@ class App(tk.Tk):
             self.out_dir = os.path.join(f, "stacks")
             out_arg = self.out_dir
             self.preview_path = None
-        elif has_images(f):
+        elif is_session(f):
             self.out_dir = os.path.join(f, "stacked")
             os.makedirs(self.out_dir, exist_ok=True)
             name = target_name(f)
