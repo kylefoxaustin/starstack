@@ -16,6 +16,7 @@ No sequence files. No project folder. No state left behind.
 from __future__ import annotations
 
 import argparse
+import re
 import os
 import sys
 import tempfile
@@ -596,6 +597,95 @@ def main(argv=None):
     p.add_argument("-q", "--quiet", action="store_true")
     args = p.parse_args(argv)
 
+    sessions = find_sessions(args.folder)
+    if sessions:
+        return run_batch(args, sessions)
+    return run(args)
+
+
+def _has_images(folder: str) -> bool:
+    try:
+        return any(os.path.splitext(f)[1].lower() in IMAGE_EXT for f in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def find_sessions(folder: str):
+    """Whole-night mode: a folder that holds no frames itself but has
+    subfolders that do (an Odyssey `unistellar_observations` download, a
+    night's worth of Seestar targets). Returns the session folders, or []."""
+    if any(ch in folder for ch in "*?[") or not os.path.isdir(folder) or _has_images(folder):
+        return []
+    subs = sorted(os.path.join(folder, d) for d in os.listdir(folder)
+                  if os.path.isdir(os.path.join(folder, d)))
+    return [d for d in subs if _has_images(d)]
+
+
+def session_name(folder: str) -> str:
+    """Name a session by its target when the scope tells us, else the folder."""
+    name = None
+    mpath = os.path.join(folder, "manifest.json")
+    if os.path.exists(mpath):
+        try:
+            import json
+            with open(mpath) as fh:
+                name = json.load(fh).get("nameTarget")
+        except Exception:
+            name = None
+    name = (name or os.path.basename(folder.rstrip("/\\"))).strip()
+    return re.sub(r'[<>:"/\\|?*]+', "-", name).strip(" .") or "stack"
+
+
+def run_batch(args, sessions):
+    import copy
+    log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+    ext = os.path.splitext(args.out)[1].lower()
+    if args.out == "stacked.tif" or ext in IMAGE_EXT:
+        out_dir = os.path.join(args.folder, "stacks")
+        out_ext = ext if ext in IMAGE_EXT else ".tif"
+    else:
+        out_dir, out_ext = args.out, ".tif"
+    os.makedirs(out_dir, exist_ok=True)
+    # our own output folder from a previous night is not a session
+    sessions = [s for s in sessions if os.path.abspath(s) != os.path.abspath(out_dir)]
+    if not sessions:
+        sys.exit("only found my own previous output in there. Nothing new to stack.")
+    parent = os.path.basename(args.folder.rstrip("/\\"))
+    log(f"whole night: {len(sessions)} session folders under {parent}. "
+        f"Stacking all of them into {out_dir}. Go to bed.")
+    names, results, t0 = {}, [], time.time()
+    for i, sess in enumerate(sessions, 1):
+        name = session_name(sess)
+        if name in names:                       # same target twice: keep both
+            name = f"{name} ({os.path.basename(sess)})"
+        names[name] = sess
+        a = copy.copy(args)
+        a.folder = sess
+        a.out = os.path.join(out_dir, name + out_ext)
+        a.preview = os.path.join(out_dir, name + "_look.png")
+        a.report = os.path.join(out_dir, name + "_frames.csv") if args.report else None
+        log("\n" + "=" * 46 + f"\n[{i}/{len(sessions)}] {name}\n" + "=" * 46)
+        try:
+            rc = run(a)
+            results.append((name, "ok" if rc == 0 else f"exit {rc}", a.out))
+        except SystemExit as e:                 # one bad session must not sink the night
+            results.append((name, f"failed: {e}", None))
+            log(f"  {name}: {e}. Moving on.")
+        except Exception as e:
+            results.append((name, f"failed: {str(e)[:60]}", None))
+            log(f"  {name}: {str(e)[:80]}. Moving on.")
+    log("\n" + "-" * 46 + "\n  the night")
+    for name, status, out in results:
+        log(f"  {name:<32} {status}")
+    ok = sum(1 for r in results if r[1] == "ok")
+    log(f"  {ok}/{len(results)} sessions stacked in {time.time()-t0:.0f}s  ->  {out_dir}")
+    log("-" * 46)
+    if not args.quiet:
+        print("done. all of it. go to bed.")
+    return 0 if ok else 1
+
+
+def run(args):
     log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
     t0 = time.time()
 

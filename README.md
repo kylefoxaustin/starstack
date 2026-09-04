@@ -12,6 +12,11 @@ python starstack.py /path/to/frames -o result.tif --preview look.png
 That's it. That's the workflow. No sequence files, no process folder, no
 "register first, then stack", no state left on disk, no forum thread.
 
+Don't like terminals? **Drag the folder onto `STACK.bat`.** That's the
+whole button. (Or double-click it and pick a folder; `stack.sh` on
+Linux/macOS.) A window opens, the owl narrates, the picture shows up when
+it's done.
+
 <p align="center">
   <img src="docs/m81_example.png" alt="M81 stacked with starstack from 710 Unistellar Odyssey Pro frames" width="820">
 </p>
@@ -85,6 +90,46 @@ evening. It reads what is there and gets on with it.
   goodbye. `--method mean` for a fast streaming average with no scratch
   file, `--method median` if you'd rather.
 
+## Whole-night mode
+
+Point it at the folder *above* the sessions -- the `unistellar_observations`
+download from an Odyssey, a night of Seestar targets, anything with one
+subfolder per target -- and it stacks every session in turn, naming each
+output after the target from the scope's manifest when there is one:
+
+```
+python starstack.py "unistellar_observations (1)"
+
+whole night: 4 session folders under unistellar_observations (1). Stacking all of them into ...\stacks. Go to bed.
+[1/4] M81 - Bode's Galaxy
+...
+  the night
+  M81 - Bode's Galaxy              ok
+  M27 - Dumbbell Nebula            ok
+  M13 - Hercules Cluster           ok
+  NGC 7000                         ok
+  4/4 sessions stacked in 1042s  ->  ...\stacks
+done. all of it. go to bed.
+```
+
+Each target gets a `.tif`, a `_look.png` preview and (with `--report`) a
+`_frames.csv`. Two sessions of the same target keep both, suffixed by the
+session folder. One session failing does not sink the night. The output
+folder from a previous run is recognised and not mistaken for a session.
+
+## The button
+
+`button.py` is the Big Red Button as a window: folder picker, STACK,
+live log, picture. It runs `starstack.py` underneath, so the CLI stays the
+source of truth and the window is just a face. Nothing to install beyond
+Python's own tkinter. It knows the difference between one session and a
+whole night, names outputs after the target, and writes into a `stacked/`
+(one session) or `stacks/` (whole night) folder next to your frames.
+
+<p align="center">
+  <img src="docs/button_window.png" alt="the starstack window" width="640">
+</p>
+
 ## What it says while it works
 
 It narrates. Briefly, and with opinions. (Condensed from real runs on the
@@ -142,6 +187,9 @@ fine), GraXpert, Photoshop, GIMP.
 | `-j N` | worker processes (default: CPU count, max 8) |
 | `--report file.csv` | per-frame status, plus stars / FWHM / background / noise / weight |
 | `-q` | quiet |
+
+Point `folder` at a parent of session folders instead and you get whole-night
+mode (above); `-o` then names the output *folder*.
 
 ## Disk and memory
 
