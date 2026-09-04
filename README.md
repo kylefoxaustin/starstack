@@ -165,6 +165,13 @@ scrolls -- wheel, scrollbar, or arrows / PgUp / PgDn / Home / End -- and it
 stops following the output while you're reading back, then follows again
 once you hit End.
 
+**Options…** opens the overrides: every flag in the table below, with a plain
+name, the default marked, and a "Reset to how the owl likes it" button. The
+main window stays folder / button / log / picture; when something is set
+off-default it says so in one muted line next to the button ("options: keep
+every frame, median") so nobody wonders why a stack came out different.
+Settings stick between launches (`~/.starstack.json`).
+
 <p align="center">
   <img src="docs/button_window.png" alt="the starstack window" width="640">
 </p>

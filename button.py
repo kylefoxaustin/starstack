@@ -110,6 +110,189 @@ class Button(tk.Canvas):
         self.draw(pressed=False)
 
 
+# ---------------------------------------------------------------------------
+# options: the overrides. everything here has a default the owl already chose.
+# ---------------------------------------------------------------------------
+DEFAULTS = {
+    "bits16": True,        # 16-bit output (else 32-bit float)
+    "quality": True,       # drop blurry / cloudy / starved frames
+    "weights": True,       # weight survivors by sharpness and noise
+    "align": True,         # star-align (off only if frames are already registered)
+    "normalize": True,     # level-match frames before combining
+    "darks": True,         # use darks found by name / in darks/
+    "report": True,        # write frames.csv next to the output
+    "method": "sigma",     # sigma | mean | median
+    "sigma": 3.0,          # clip threshold, in MADs
+    "debayer": "auto",     # auto | RGGB | BGGR | GRBG | GBRG | none
+    "jobs": 0,             # 0 = let it pick
+}
+LABELS = {  # what the main window says when something is off-default
+    "bits16": lambda v: None if v else "32-bit",
+    "quality": lambda v: None if v else "keep every frame",
+    "weights": lambda v: None if v else "no weighting",
+    "align": lambda v: None if v else "no alignment",
+    "normalize": lambda v: None if v else "no level-match",
+    "darks": lambda v: None if v else "no darks",
+    "report": lambda v: None if v else "no report",
+    "method": lambda v: None if v == "sigma" else v,
+    "sigma": lambda v: None if abs(v - 3.0) < 1e-9 else f"sigma {v:g}",
+    "debayer": lambda v: None if v == "auto" else f"debayer {v}",
+    "jobs": lambda v: None if not v else f"{v} workers",
+}
+SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".starstack.json")
+
+
+def load_settings():
+    s = dict(DEFAULTS)
+    try:
+        import json
+        with open(SETTINGS_FILE) as fh:
+            saved = json.load(fh)
+        s.update({k: v for k, v in saved.items() if k in DEFAULTS})
+    except Exception:
+        pass
+    return s
+
+
+def save_settings(s):
+    try:
+        import json
+        with open(SETTINGS_FILE, "w") as fh:
+            json.dump(s, fh, indent=2)
+    except Exception:
+        pass
+
+
+def settings_to_args(s):
+    """The overrides, as starstack flags. Defaults produce nothing."""
+    a = []
+    if s["bits16"]:
+        a += ["--bits", "16"]
+    if not s["quality"]:
+        a += ["--keep-all"]
+    if not s["weights"]:
+        a += ["--no-weights"]
+    if not s["align"]:
+        a += ["--no-align"]
+    if not s["normalize"]:
+        a += ["--no-normalize"]
+    if not s["darks"]:
+        a += ["--no-darks"]
+    if s["method"] != "sigma":
+        a += ["--method", s["method"]]
+    if abs(float(s["sigma"]) - 3.0) > 1e-9:
+        a += ["--sigma", f"{float(s['sigma']):g}"]
+    if s["debayer"] != "auto":
+        a += ["--debayer", s["debayer"]]
+    if s["jobs"]:
+        a += ["-j", str(int(s["jobs"]))]
+    return a
+
+
+def summarize(s):
+    parts = [LABELS[k](s[k]) for k in DEFAULTS]
+    parts = [p for p in parts if p]
+    return ("options: " + ", ".join(parts)) if parts else ""
+
+
+class OptionsDialog(tk.Toplevel):
+    """The overrides, with plain names and the default marked on each."""
+
+    def __init__(self, master, settings, on_close):
+        super().__init__(master)
+        self.title("starstack options")
+        self.configure(bg=NAVY)
+        self.resizable(False, False)
+        self.transient(master)
+        self.settings, self.on_close = settings, on_close
+        self.vars = {}
+        pad = {"padx": 18, "pady": 3}
+
+        def section(text):
+            tk.Label(self, text=text, fg=MUTE, bg=NAVY, font=(SANS[0], 10, "bold")).pack(anchor="w", padx=18, pady=(12, 2))
+
+        def check(key, text):
+            v = tk.BooleanVar(value=bool(settings[key])); self.vars[key] = v
+            tk.Checkbutton(self, text=text + ("   (default)" if DEFAULTS[key] else ""), variable=v, bg=NAVY, fg="#c9cfe0",
+                           selectcolor=NAVY2, activebackground=NAVY, activeforeground=CREAM, font=SANS,
+                           anchor="w", highlightthickness=0, bd=0).pack(fill="x", **pad)
+
+        def choice(key, text, options, default_note):
+            row = tk.Frame(self, bg=NAVY); row.pack(fill="x", **pad)
+            tk.Label(row, text=text, fg="#c9cfe0", bg=NAVY, font=SANS, width=30, anchor="w").pack(side="left")
+            v = tk.StringVar(value=str(settings[key])); self.vars[key] = v
+            m = tk.OptionMenu(row, v, *options)
+            m.config(bg=NAVY2, fg=CREAM, activebackground="#22304a", activeforeground=CREAM, relief="flat",
+                     highlightthickness=0, font=SANS, width=8)
+            m["menu"].config(bg=NAVY2, fg=CREAM, activebackground="#22304a", activeforeground=CREAM, font=SANS)
+            m.pack(side="left")
+            tk.Label(row, text=default_note, fg=MUTE, bg=NAVY, font=(SANS[0], 9)).pack(side="left", padx=(8, 0))
+
+        def number(key, text, default_note):
+            row = tk.Frame(self, bg=NAVY); row.pack(fill="x", **pad)
+            tk.Label(row, text=text, fg="#c9cfe0", bg=NAVY, font=SANS, width=30, anchor="w").pack(side="left")
+            v = tk.StringVar(value=str(settings[key])); self.vars[key] = v
+            tk.Entry(row, textvariable=v, width=6, bg=NAVY2, fg=CREAM, insertbackground=CREAM, relief="flat",
+                     font=SANS, justify="center").pack(side="left", ipady=3)
+            tk.Label(row, text=default_note, fg=MUTE, bg=NAVY, font=(SANS[0], 9)).pack(side="left", padx=(8, 0))
+
+        tk.Label(self, text="Everything here already has an answer. Change it only if the owl got it wrong.",
+                 fg=MUTE, bg=NAVY, font=SANS, wraplength=500, justify="left").pack(anchor="w", padx=18, pady=(14, 0))
+
+        section("Frames")
+        check("darks", "Use dark frames (found by name, or in a darks/ folder)")
+        check("quality", "Drop blurry, cloudy and starved frames")
+        check("weights", "Weight the rest by sharpness and noise")
+        check("align", "Star-align every frame (off only if they're already registered)")
+        check("normalize", "Level-match frames before combining")
+        choice("debayer", "Bayer pattern", ["auto", "RGGB", "BGGR", "GRBG", "GBRG", "none"], "default: auto (the owl looks)")
+
+        section("Combine")
+        choice("method", "How frames are combined", ["sigma", "mean", "median"], "default: sigma")
+        number("sigma", "Clip threshold (in MADs, for sigma)", "default: 3.0")
+        number("jobs", "Worker processes (0 = let it pick)", "default: 0")
+
+        section("Output")
+        check("bits16", "16-bit output (off = 32-bit float)")
+        check("report", "Write frames.csv with per-frame numbers next to the output")
+
+        foot = tk.Frame(self, bg=NAVY); foot.pack(fill="x", padx=18, pady=(16, 14))
+        tk.Button(foot, text="Reset to how the owl likes it", command=self.reset, bg=NAVY2, fg=CREAM,
+                  activebackground="#22304a", activeforeground=CREAM, relief="flat", padx=10, font=SANS).pack(side="left")
+        tk.Button(foot, text="Done", command=self.close, bg=RED, fg="#fff4ee", activebackground=RED_DARK,
+                  activeforeground="#fff4ee", relief="flat", padx=18, font=(SANS[0], 11, "bold")).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+
+    def reset(self):
+        for k, v in DEFAULTS.items():
+            self.vars[k].set(v if not isinstance(self.vars[k], tk.StringVar) else str(v))
+
+    def collect(self):
+        s = dict(self.settings)
+        for k, var in self.vars.items():
+            val = var.get()
+            if isinstance(DEFAULTS[k], bool):
+                s[k] = bool(val)
+            elif isinstance(DEFAULTS[k], float):
+                try:
+                    s[k] = float(val)
+                except ValueError:
+                    s[k] = DEFAULTS[k]
+            elif isinstance(DEFAULTS[k], int):
+                try:
+                    s[k] = max(0, int(float(val)))
+                except ValueError:
+                    s[k] = DEFAULTS[k]
+            else:
+                s[k] = str(val)
+        return s
+
+    def close(self):
+        self.on_close(self.collect())
+        self.destroy()
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -122,6 +305,7 @@ class App(tk.Tk):
         self.q = queue.Queue()
         self.preview_path = None
         self.out_dir = None
+        self.settings = load_settings()
         self._build()
         self.after(80, self._pump)
 
@@ -180,11 +364,10 @@ class App(tk.Tk):
                   activeforeground=CREAM, relief="flat", padx=12, font=SANS).pack(side="left", padx=(8, 0))
 
         opts = tk.Frame(self, bg=NAVY); opts.pack(fill="x", padx=18)
-        self.bits16 = tk.BooleanVar(value=True)
-        self.keep_all = tk.BooleanVar(value=False)
-        for text, var in (("16-bit output", self.bits16), ("keep every frame (skip the quality pass)", self.keep_all)):
-            tk.Checkbutton(opts, text=text, variable=var, bg=NAVY, fg="#c9cfe0", selectcolor=NAVY2,
-                           activebackground=NAVY, activeforeground=CREAM, font=SANS).pack(side="left", padx=(0, 16))
+        tk.Button(opts, text="Options…", command=self.open_options, bg=NAVY2, fg="#c9cfe0",
+                  activebackground="#22304a", activeforeground=CREAM, relief="flat", padx=10, font=SANS).pack(side="left")
+        self.opts_lbl = tk.Label(opts, text=summarize(self.settings), fg=MUTE, bg=NAVY, font=MONO)
+        self.opts_lbl.pack(side="left", padx=(12, 0))
 
         body = tk.PanedWindow(self, orient="vertical", bg=NAVY, sashwidth=6, sashrelief="flat")
         body.pack(fill="both", expand=True, padx=18, pady=(6, 10))
@@ -269,6 +452,14 @@ class App(tk.Tk):
             self.after_cancel(self._blink_job)
         self._blink_job = self.after(random.randint(2500, 6000), self._blink)
 
+    # ---- options ------------------------------------------------------------
+    def open_options(self):
+        def done(s):
+            self.settings = s
+            save_settings(s)
+            self.opts_lbl.config(text=summarize(s))
+        OptionsDialog(self, self.settings, done)
+
     # ---- behaviour ----------------------------------------------------------
     def browse(self):
         d = filedialog.askdirectory(title="Folder of frames, or a folder of session folders")
@@ -328,11 +519,9 @@ class App(tk.Tk):
             cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), "-u", STARSTACK, f, "-o", out_arg]
         if self.preview_path:
             cmd += ["--preview", self.preview_path]
-        if self.bits16.get():
-            cmd += ["--bits", "16"]
-        if self.keep_all.get():
-            cmd += ["--keep-all"]
-        cmd += ["--report", os.path.join(self.out_dir, "frames.csv")] if self.preview_path else ["--report", "x"]
+        cmd += settings_to_args(self.settings)
+        if self.settings["report"]:
+            cmd += ["--report", os.path.join(self.out_dir, "frames.csv")] if self.preview_path else ["--report", "x"]
 
         self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
         self.preview_lbl.config(image="", text="working…")
