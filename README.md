@@ -242,6 +242,8 @@ fine), GraXpert, Photoshop, GIMP.
 | `-j N` | worker processes (default: CPU count, max 8) |
 | `--report file.csv` | per-frame status, plus stars / FWHM / background / noise / weight |
 | `--sort` / `--sort --dry-run` | sort a one-pile folder into lights/ darks/ ... and stop |
+| `--scratch DIR` | where the temporary cube goes (default: system temp) |
+| `--no-log` | don't write the .log next to the output |
 | `-q` | quiet |
 
 Point `folder` at a parent of session folders instead and you get whole-night
@@ -251,9 +253,23 @@ mode (above); `-o` then names the output *folder*.
 
 Sigma clipping needs every registered frame at once, so they go into a
 temporary memory-mapped scratch cube (`frames × height × width × channels × 4
-bytes` — 700 colour frames at 1452×1094 is about 13 GB). It's created in your
-temp directory and deleted when the run finishes. If that's too much,
-`--method mean` streams and uses no scratch space.
+bytes` — 700 colour frames at 1452×1094 is about 13 GB; 700 frames from a
+24-megapixel DSLR would be over 200 GB). It's created in your temp folder and
+deleted when the run finishes. Before it starts, starstack checks the free
+space there: if the cube won't fit it says so and falls back to a streaming
+mean (no scratch file, but no outlier rejection or quality pass either)
+rather than filling the drive and dying at 70%. `--scratch D:\somewhere`
+puts the cube on a drive with room; `--method mean` streams on purpose.
+
+## What it leaves behind
+
+Next to the output: the stack, the `_look.png` preview, `frames.csv` if
+asked, and a `.log` with everything the owl said during the run (append-only,
+one header line per run) -- so when something goes wrong there is a file to
+attach rather than a memory of a window. `--no-log` if you'd rather not. The
+summary also reports total integration (`676 x 4s = 45m 04s`), and the
+output file carries it: `EXPTIME`, `EXPOSURE`, `OBJECT`, `STACKED` in a
+FITS header, or the same as a JSON description tag in a TIFF.
 
 ## Smart scope notes
 

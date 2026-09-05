@@ -196,6 +196,7 @@ DEFAULTS = {
     "debayer": "auto",     # auto | RGGB | BGGR | GRBG | GBRG | none
     "jobs": 0,             # 0 = let it pick
     "out_dir": "",         # "" = next to the frames (stacked/ or stacks/)
+    "scratch": "",         # "" = system temp; the 10+ GB cube goes here
 }
 LABELS = {  # what the main window says when something is off-default
     "bits16": lambda v: None if v else "32-bit",
@@ -210,6 +211,7 @@ LABELS = {  # what the main window says when something is off-default
     "debayer": lambda v: None if v == "auto" else f"debayer {v}",
     "jobs": lambda v: None if not v else f"{v} workers",
     "out_dir": lambda v: None,          # shown in its own row, not the summary
+    "scratch": lambda v: None if not v else f"scratch: {v}",
 }
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".starstack.json")
 
@@ -258,6 +260,8 @@ def settings_to_args(s):
         a += ["--debayer", s["debayer"]]
     if s["jobs"]:
         a += ["-j", str(int(s["jobs"]))]
+    if s.get("scratch"):
+        a += ["--scratch", s["scratch"]]
     return a
 
 
@@ -323,6 +327,23 @@ class OptionsDialog(tk.Toplevel):
         choice("method", "How frames are combined", ["sigma", "mean", "median"], "default: sigma")
         number("sigma", "Clip threshold (in MADs, for sigma)", "default: 3.0")
         number("jobs", "Worker processes (0 = let it pick)", "default: 0")
+
+        def folder(key, text, default_note):
+            row = tk.Frame(self, bg=NAVY); row.pack(fill="x", **pad)
+            tk.Label(row, text=text, fg="#c9cfe0", bg=NAVY, font=SANS, width=30, anchor="w").pack(side="left")
+            v = tk.StringVar(value=str(settings.get(key, ""))); self.vars[key] = v
+            tk.Entry(row, textvariable=v, width=22, bg=NAVY2, fg=CREAM, insertbackground=CREAM, relief="flat",
+                     font=(SANS[0], 9)).pack(side="left", ipady=3)
+
+            def pick():
+                d = filedialog.askdirectory(title=text, parent=self)
+                if d:
+                    v.set(d)
+            tk.Button(row, text="…", command=pick, bg=NAVY2, fg=CREAM, activebackground="#22304a",
+                      activeforeground=CREAM, relief="flat", padx=6, font=SANS).pack(side="left", padx=(4, 0))
+            tk.Label(row, text=default_note, fg=MUTE, bg=NAVY, font=(SANS[0], 9)).pack(side="left", padx=(8, 0))
+
+        folder("scratch", "Scratch folder for the temporary cube", "default: system temp (needs 10+ GB)")
 
         section("Output")
         check("bits16", "16-bit output (off = 32-bit float)")

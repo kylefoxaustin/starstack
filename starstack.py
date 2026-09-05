@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -602,6 +602,9 @@ def main(argv=None):
     p.add_argument("--report", default=None, help="write a per-frame CSV report here")
     p.add_argument("-j", "--jobs", type=int, default=None,
                    help="parallel workers (default: CPU count, max 8)")
+    p.add_argument("--scratch", default=None, metavar="DIR",
+                   help="where the temporary scratch cube goes (default: the system temp folder)")
+    p.add_argument("--no-log", action="store_true", help="don't write a .log next to the output")
     p.add_argument("-q", "--quiet", action="store_true")
     args = p.parse_args(argv)
 
@@ -752,9 +755,41 @@ def session_name(folder: str) -> str:
     return re.sub(r'[<>:"/\\|?*]+', "-", name).strip(" .") or "stack"
 
 
+class Logger:
+    """Prints (unless quiet) and keeps a copy in a .log file next to the
+    output, because "attach the log" is the first thing anyone asks."""
+
+    def __init__(self, quiet: bool, path: str | None):
+        self.quiet, self.fh = quiet, None
+        if path:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+                self.fh = open(path, "a", encoding="utf-8")
+                self.fh.write(f"\n===== starstack {__version__}  {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+            except OSError:
+                self.fh = None
+
+    def __call__(self, *parts):
+        text = " ".join(str(p) for p in parts)
+        if not self.quiet:
+            print(text, flush=True)
+        if self.fh:
+            self.fh.write(text + "\n")
+            self.fh.flush()
+
+    def close(self):
+        if self.fh:
+            self.fh.close()
+            self.fh = None
+
+
+def _log_path_for(out_path: str) -> str:
+    return os.path.splitext(out_path)[0] + ".log"
+
+
 def run_batch(args, sessions):
     import copy
-    log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+    log = Logger(args.quiet, None)
     ext = os.path.splitext(args.out)[1].lower()
     if args.out == "stacked.tif" or ext in IMAGE_EXT:
         out_dir = os.path.join(args.folder, "stacks")
@@ -762,6 +797,7 @@ def run_batch(args, sessions):
     else:
         out_dir, out_ext = args.out, ".tif"
     os.makedirs(out_dir, exist_ok=True)
+    log = Logger(args.quiet, os.path.join(out_dir, "night.log"))
     # our own output folder from a previous night is not a session
     sessions = [s for s in sessions if os.path.abspath(s) != os.path.abspath(out_dir)]
     if not sessions:
@@ -796,13 +832,13 @@ def run_batch(args, sessions):
     ok = sum(1 for r in results if r[1] == "ok")
     log(f"  {ok}/{len(results)} sessions stacked in {time.time()-t0:.0f}s  ->  {out_dir}")
     log("-" * 46)
-    if not args.quiet:
-        print("done. all of it. go to bed.")
+    log("done. all of it. go to bed.")
+    log.close()
     return 0 if ok else 1
 
 
 def run(args):
-    log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+    log = Logger(args.quiet, _log_path_for(args.out) if not args.no_log else None)
     t0 = time.time()
 
     # ---- discover -----------------------------------------------------------
@@ -891,6 +927,19 @@ def run(args):
                 f"{(session['saved'] or 0) - (session['scope_stacked'] or 0)} of them. We'll see.")
         except Exception:
             session = {}
+
+    # exposure per frame: the scope's manifest, else a FITS header
+    exposure_s = float(session.get("exposure_s") or 0) if session else 0.0
+    if not exposure_s:
+        for f in frames:
+            if f.kind == "light" and os.path.splitext(f.path)[1].lower() in FITS_EXT:
+                try:
+                    from astropy.io import fits as _fits
+                    h = _fits.getheader(f.path)
+                    exposure_s = float(h.get("EXPTIME") or h.get("EXPOSURE") or 0)
+                except Exception:
+                    exposure_s = 0.0
+                break
 
     # ---- pass 1: shapes -----------------------------------------------------
     for f in frames:
@@ -1018,7 +1067,23 @@ def run(args):
 
     nbytes = len(usable) * int(np.prod(out_shape)) * 4
     streaming = args.method == "mean"
-    tmpdir = tempfile.mkdtemp(prefix="starstack_")
+    scratch_root = args.scratch or tempfile.gettempdir()
+    if not streaming:
+        import shutil
+        try:
+            free = shutil.disk_usage(scratch_root).free
+        except OSError:
+            free = None
+        need = int(nbytes * 1.05) + 512 * 1024 ** 2          # the cube, plus breathing room
+        if free is not None and free < need:
+            log(f"the scratch cube would be {nbytes/1e9:.1f} GB and {scratch_root} has "
+                f"{free/1e9:.1f} GB free. Not going to fill your drive and die at 70%.")
+            log(f"  falling back to a streaming mean: no scratch file, no outlier rejection, "
+                f"no quality pass. Satellites may survive. "
+                f"--scratch D:\\somewhere with room gets you the real thing.")
+            streaming = True
+            args.method = "mean"
+    tmpdir = tempfile.mkdtemp(prefix="starstack_", dir=scratch_root)
     mm = None
     if not streaming:
         log(f"scratch cube: {nbytes/1e9:.2f} GB in {tmpdir}. It's temporary. Relax.")
@@ -1134,11 +1199,24 @@ def run(args):
         hdu = _fits.PrimaryHDU(data)
         hdu.header["STACKED"] = (kept, "frames combined by starstack")
         hdu.header["STACKMTH"] = args.method
+        hdu.header["SWCREATE"] = f"starstack {__version__}"
+        if exposure_s:
+            hdu.header["EXPTIME"] = (exposure_s * kept, "total integration, seconds")
+            hdu.header["EXPOSURE"] = (exposure_s, "per-frame exposure, seconds")
+        if session.get("target"):
+            hdu.header["OBJECT"] = session["target"]
         hdu.writeto(args.out, overwrite=True)
     else:
-        import tifffile
+        import tifffile, json as _json
+        meta = {"software": f"starstack {__version__}", "frames": kept, "method": args.method}
+        if exposure_s:
+            meta["exposure_s"] = exposure_s
+            meta["integration_s"] = exposure_s * kept
+        if session.get("target"):
+            meta["target"] = session["target"]
         tifffile.imwrite(args.out, out_arr,
-                         photometric="rgb" if out_arr.ndim == 3 else "minisblack")
+                         photometric="rgb" if out_arr.ndim == 3 else "minisblack",
+                         description=_json.dumps(meta))
     if args.preview:
         from PIL import Image
         prev = (np.clip(autostretch(stacked), 0, 1) * 255).astype(np.uint8)
@@ -1163,6 +1241,12 @@ def run(args):
     log(f"  output        {args.out}  {stacked.shape}")
     if coverage is not None:
         log(f"  coverage      {int(coverage.min())}-{int(coverage.max())} frames/pixel")
+    if exposure_s:
+        total = exposure_s * kept
+        mins, secs = divmod(int(round(total)), 60)
+        hrs, mins = divmod(mins, 60)
+        pretty = (f"{hrs}h {mins:02d}m {secs:02d}s" if hrs else f"{mins}m {secs:02d}s")
+        log(f"  integration   {pretty}  ({kept} x {round(exposure_s, 2):g}s)")
     log(f"  elapsed       {time.time()-t0:.1f}s")
     log("-" * 46)
 
@@ -1181,12 +1265,14 @@ def run(args):
         log(f"per-frame report: {args.report}")
 
     rejected = tally["unreadable"] + tally["align"] + tally["quality"]
-    if rejected and not args.quiet:
-        print(f"\n{rejected} frame(s) wouldn't cooperate and were left out. "
-              f"{'--report tells you which. ' if not args.report else 'They are in the report. '}"
-              f"That is normal. Not an error. Don't email me.")
-    if not args.quiet:
-        print("done. go outside.")
+    if rejected:
+        log(f"\n{rejected} frame(s) wouldn't cooperate and were left out. "
+            f"{'--report tells you which. ' if not args.report else 'They are in the report. '}"
+            f"That is normal. Not an error. Don't email me.")
+    if log.fh:
+        log(f"log: {_log_path_for(args.out)}")
+    log("done. go outside.")
+    log.close()
     return 0
 
 
