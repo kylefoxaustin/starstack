@@ -160,10 +160,17 @@ live log, picture. It runs `starstack.py` underneath, so the CLI stays the
 source of truth and the window is just a face. Nothing to install beyond
 Python's own tkinter. It knows the difference between one session and a
 whole night, names outputs after the target, and writes into a `stacked/`
-(one session) or `stacks/` (whole night) folder next to your frames. The log
+(one session) or `stacks/` (whole night) folder next to your frames -- or
+into any folder you pick in the Output row, which it remembers. The log
 scrolls -- wheel, scrollbar, or arrows / PgUp / PgDn / Home / End -- and it
 stops following the output while you're reading back, then follows again
 once you hit End.
+
+While a stack is running the big red button reads **PAUSE**: press it and
+the stacker and its worker processes freeze where they stand (the owl shuts
+his eyes), press **RESUME** and they pick up exactly there. Nothing is lost;
+only the time-left estimate gets confused. **Stop** in the footer abandons
+the run for good.
 
 **Options…** opens the overrides: every flag in the table below, with a plain
 name, the default marked, and a "Reset to how the owl likes it" button. The

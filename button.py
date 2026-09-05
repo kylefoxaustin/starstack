@@ -78,6 +78,7 @@ class Button(tk.Canvas):
     def __init__(self, master, size=150, command=None, **kw):
         super().__init__(master, width=size, height=size, bg=NAVY, highlightthickness=0, **kw)
         self.size, self.command, self.enabled = size, command, True
+        self.label = "STACK"
         self.draw(pressed=False)
         self.bind("<ButtonPress-1>", lambda e: self.enabled and self.draw(pressed=True))
         self.bind("<ButtonRelease-1>", self._release)
@@ -102,12 +103,81 @@ class Button(tk.Canvas):
         self.create_oval(c - r, c - r - lift, c + r, c + r - lift, fill=col, outline="")
         self.create_oval(c - r * 0.55, c - r * 0.85 - lift, c + r * 0.15, c - r * 0.45 - lift,
                          fill=RED_LIT if self.enabled else "#8a5a55", outline="", stipple="gray50")
-        self.create_text(c, c - lift + 2, text="STACK", fill="#fff4ee",
-                         font=("Impact", int(s * 0.17)) if sys.platform.startswith("win") else ("DejaVu Sans", int(s * 0.14), "bold"))
+        size_pt = int(s * (0.17 if len(self.label) <= 5 else 0.13))
+        self.create_text(c, c - lift + 2, text=self.label, fill="#fff4ee",
+                         font=("Impact", size_pt) if sys.platform.startswith("win") else ("DejaVu Sans", int(size_pt * 0.82), "bold"))
 
     def set_enabled(self, on):
         self.enabled = on
         self.draw(pressed=False)
+
+    def set_label(self, text):
+        self.label = text
+        self.draw(pressed=False)
+
+
+# ---------------------------------------------------------------------------
+# pausing: freeze the stacker and its worker processes where they stand
+# ---------------------------------------------------------------------------
+def _tree(proc):
+    """The subprocess and its workers, via psutil when available."""
+    try:
+        import psutil
+        p = psutil.Process(proc.pid)
+        return [p] + p.children(recursive=True)
+    except Exception:
+        return None
+
+
+def pause_tree(proc):
+    procs = _tree(proc)
+    if procs is not None:
+        for p in procs:
+            try:
+                p.suspend()
+            except Exception:
+                pass
+        return True
+    if not sys.platform.startswith("win"):
+        import signal
+        os.kill(proc.pid, signal.SIGSTOP)      # no psutil: main process only
+        return True
+    return False
+
+
+def resume_tree(proc):
+    procs = _tree(proc)
+    if procs is not None:
+        for p in reversed(procs):
+            try:
+                p.resume()
+            except Exception:
+                pass
+        return
+    if not sys.platform.startswith("win"):
+        import signal
+        os.kill(proc.pid, signal.SIGCONT)
+
+
+def kill_tree(proc):
+    procs = _tree(proc)
+    if procs is not None:
+        for p in procs:
+            try:
+                p.resume()
+            except Exception:
+                pass
+        for p in reversed(procs):              # workers first, then the parent
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        return
+    try:
+        resume_tree(proc)
+    except Exception:
+        pass
+    proc.terminate()
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +195,7 @@ DEFAULTS = {
     "sigma": 3.0,          # clip threshold, in MADs
     "debayer": "auto",     # auto | RGGB | BGGR | GRBG | GBRG | none
     "jobs": 0,             # 0 = let it pick
+    "out_dir": "",         # "" = next to the frames (stacked/ or stacks/)
 }
 LABELS = {  # what the main window says when something is off-default
     "bits16": lambda v: None if v else "32-bit",
@@ -138,6 +209,7 @@ LABELS = {  # what the main window says when something is off-default
     "sigma": lambda v: None if abs(v - 3.0) < 1e-9 else f"sigma {v:g}",
     "debayer": lambda v: None if v == "auto" else f"debayer {v}",
     "jobs": lambda v: None if not v else f"{v} workers",
+    "out_dir": lambda v: None,          # shown in its own row, not the summary
 }
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".starstack.json")
 
@@ -302,6 +374,7 @@ class App(tk.Tk):
         self.geometry("880x720")
         self.minsize(720, 560)
         self.proc = None
+        self.paused = False
         self.q = queue.Queue()
         self.preview_path = None
         self.out_dir = None
@@ -362,6 +435,22 @@ class App(tk.Tk):
         e.pack(side="left", fill="x", expand=True, ipady=6)
         tk.Button(row, text="Browse…", command=self.browse, bg=NAVY2, fg=CREAM, activebackground="#22304a",
                   activeforeground=CREAM, relief="flat", padx=12, font=SANS).pack(side="left", padx=(8, 0))
+
+        orow = tk.Frame(self, bg=NAVY); orow.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Label(orow, text="Output", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
+        self.out_var = tk.StringVar(value=self.settings.get("out_dir", ""))
+        self.out_entry = tk.Entry(orow, textvariable=self.out_var, bg=NAVY2, fg=CREAM, insertbackground=CREAM,
+                                  relief="flat", font=MONO)
+        self.out_entry.pack(side="left", fill="x", expand=True, ipady=6)
+        self.out_hint = tk.Label(orow, text="", fg=MUTE, bg=NAVY, font=(SANS[0], 9))
+        tk.Button(orow, text="Browse…", command=self.browse_out, bg=NAVY2, fg=CREAM, activebackground="#22304a",
+                  activeforeground=CREAM, relief="flat", padx=12, font=SANS).pack(side="left", padx=(8, 0))
+        tk.Button(orow, text="Clear", command=lambda: self.out_var.set(""), bg=NAVY2, fg="#c9cfe0",
+                  activebackground="#22304a", activeforeground=CREAM, relief="flat", padx=8, font=SANS).pack(side="left", padx=(6, 0))
+        self.out_var.trace_add("write", lambda *_: self._out_changed())
+        self.out_entry.bind("<FocusIn>", lambda e: self._out_placeholder(False))
+        self.out_entry.bind("<FocusOut>", lambda e: self._out_placeholder(True))
+        self._out_placeholder(True)
 
         opts = tk.Frame(self, bg=NAVY); opts.pack(fill="x", padx=18)
         tk.Button(opts, text="Options…", command=self.open_options, bg=NAVY2, fg="#c9cfe0",
@@ -439,7 +528,8 @@ class App(tk.Tk):
     def _blink(self):
         """Every few seconds while working, so he reads as alive, not a sticker."""
         self._blink_job = None
-        if self.button.enabled or self.face == "waiting" or "blink" not in self.faces:
+        running = self.proc is not None and self.proc.poll() is None
+        if not running or self.paused or self.face == "waiting" or "blink" not in self.faces:
             return
         current = self.face
         self.set_face("blink")
@@ -451,6 +541,43 @@ class App(tk.Tk):
         if self._blink_job:
             self.after_cancel(self._blink_job)
         self._blink_job = self.after(random.randint(2500, 6000), self._blink)
+
+    # ---- output folder ------------------------------------------------------
+    PLACEHOLDER = "next to the frames  (stacked\\ for a session, stacks\\ for a night)"
+
+    def _out_placeholder(self, show):
+        """Grey hint inside the empty box; real text otherwise."""
+        v = self.out_var.get()
+        if show and not v.strip():
+            self._showing_hint = True
+            self.out_entry.config(fg=MUTE)
+            self.out_var.set(self.PLACEHOLDER)
+        elif not show and getattr(self, "_showing_hint", False):
+            self._showing_hint = False
+            self.out_var.set("")
+            self.out_entry.config(fg=CREAM)
+
+    def _out_changed(self):
+        v = self.out_var.get()
+        if v == self.PLACEHOLDER:
+            return
+        self.out_entry.config(fg=CREAM)
+        self._showing_hint = False
+        self.settings["out_dir"] = v.strip().strip('"')
+        save_settings(self.settings)
+        if not v.strip() and self.focus_get() is not self.out_entry:
+            self.after(10, lambda: self._out_placeholder(True))
+
+    def chosen_out_dir(self):
+        v = self.settings.get("out_dir", "").strip()
+        return v if v and v != self.PLACEHOLDER else ""
+
+    def browse_out(self):
+        d = filedialog.askdirectory(title="Where the stacks go (leave empty for next to the frames)")
+        if d:
+            self._showing_hint = False
+            self.out_entry.config(fg=CREAM)
+            self.out_var.set(d)
 
     # ---- options ------------------------------------------------------------
     def open_options(self):
@@ -473,6 +600,7 @@ class App(tk.Tk):
         if is_night(f):
             n = sum(1 for d in os.listdir(f) if is_session(os.path.join(f, d)))
             self.mode_lbl.config(text=f"whole night: {n} session folders. One press does all of them.")
+            return
         elif is_sorted(f):
             ld = os.path.join(f, "lights" if os.path.isdir(os.path.join(f, "lights")) else "light")
             n = sum(1 for x in os.listdir(ld) if os.path.splitext(x)[1].lower() in IMAGE_EXT)
@@ -497,15 +625,23 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     def stack(self):
+        if self.proc and self.proc.poll() is None:          # running: the button pauses / resumes
+            self.toggle_pause(); return
         f = self.folder.get().strip().strip('"')
         if not os.path.isdir(f):
             self.say("pick a folder first. I can't stack a feeling.\n", "bad"); return
+        chosen = self.chosen_out_dir()
+        if chosen and not os.path.isdir(chosen):
+            try:
+                os.makedirs(chosen, exist_ok=True)
+            except OSError as e:
+                self.say(f"can't create the output folder {chosen}: {e}\n", "bad"); return
         if is_night(f):
-            self.out_dir = os.path.join(f, "stacks")
+            self.out_dir = chosen or os.path.join(f, "stacks")
             out_arg = self.out_dir
             self.preview_path = None
         elif is_session(f):
-            self.out_dir = os.path.join(f, "stacked")
+            self.out_dir = chosen or os.path.join(f, "stacked")
             os.makedirs(self.out_dir, exist_ok=True)
             name = target_name(f)
             out_arg = os.path.join(self.out_dir, name + ".tif")
@@ -525,7 +661,8 @@ class App(tk.Tk):
 
         self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
         self.preview_lbl.config(image="", text="working…")
-        self.button.set_enabled(False); self.stop_btn.config(state="normal"); self.open_btn.config(state="disabled")
+        self.paused = False
+        self.button.set_label("PAUSE"); self.stop_btn.config(state="normal"); self.open_btn.config(state="disabled")
         self.status.config(text="stacking…")
         self.set_face("focused")
         self._schedule_blink()
@@ -578,6 +715,9 @@ class App(tk.Tk):
             pass
         self.after(80, self._pump)
 
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
     def _glance(self, name, back, ms):
         """Pull a face for a moment, then return to `back` -- unless something
         else changed his mood in the meantime."""
@@ -585,7 +725,7 @@ class App(tk.Tk):
         seq = self._face_seq
 
         def revert():
-            if self._face_seq == seq and not self.button.enabled:
+            if self._face_seq == seq and self.running() and not self.paused:
                 self.set_face(back)
         self.after(ms, revert)
 
@@ -605,7 +745,8 @@ class App(tk.Tk):
             self.set_face("focused")
 
     def _finished(self, rc):
-        self.button.set_enabled(True); self.stop_btn.config(state="disabled")
+        self.paused = False
+        self.button.set_label("STACK"); self.button.set_enabled(True); self.stop_btn.config(state="disabled")
         self.open_btn.config(state="normal")
         if self._blink_job:
             self.after_cancel(self._blink_job); self._blink_job = None
@@ -623,7 +764,7 @@ class App(tk.Tk):
             return
         if self._resize_job:
             self.after_cancel(self._resize_job)
-        self._resize_job = self.after(200, lambda: self.button.enabled and self._show_preview())
+        self._resize_job = self.after(200, lambda: (not self.running()) and self._show_preview())
 
     def _show_preview(self):
         path = self.preview_path
@@ -655,9 +796,33 @@ class App(tk.Tk):
         else:
             subprocess.Popen(["xdg-open", d])
 
+    def toggle_pause(self):
+        if not (self.proc and self.proc.poll() is None):
+            return
+        if not self.paused:
+            if not pause_tree(self.proc):
+                self.say("\ncan't pause on this system (pip install psutil). Stop is over there.\n", "bad"); return
+            self.paused = True
+            self.button.set_label("RESUME")
+            self.status.config(text="paused.")
+            if self._blink_job:
+                self.after_cancel(self._blink_job); self._blink_job = None
+            self._face_before_pause = self.face
+            self.set_face("waiting")
+            self.say("\npaused. fine. the photons will wait. (the time-left estimate won't know about this.)\n", "owl")
+        else:
+            resume_tree(self.proc)
+            self.paused = False
+            self.button.set_label("PAUSE")
+            self.status.config(text="stacking…")
+            self.set_face(getattr(self, "_face_before_pause", "focused"))
+            self._schedule_blink()
+            self.say("resuming.\n", "owl")
+
     def stop(self):
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+            kill_tree(self.proc)
+            self.paused = False
             self.say("\nstopped. fine.\n", "bad")
 
 

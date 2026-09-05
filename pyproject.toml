@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starstack"
-version = "0.2.1"
+version = "0.2.0"
 description = "Dump a folder of frames in. Push one button. Get a stacked astro image out."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,6 +26,7 @@ dependencies = [
   "imagecodecs",
   "pillow",
   "opencv-python-headless",
+  "psutil",
 ]
 
 [project.urls]

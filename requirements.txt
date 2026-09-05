@@ -6,3 +6,4 @@ tifffile
 imagecodecs
 pillow
 opencv-python-headless
+psutil
