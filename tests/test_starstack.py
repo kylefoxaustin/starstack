@@ -106,6 +106,69 @@ def test_sort_folder_moves_the_pile_into_subfolders(tmp_path):
     assert ss.sort_folder(str(d), dry_run=False, log=lines.append) == 0   # idempotent
 
 
+def _seestar_frame(rng, H=1080, W=1920, shift=(0, 0)):
+    """A Seestar-shaped GRBG mosaic: portrait 1080x1920, redder sky than blue,
+    a few stars. Returns uint16 like the S50 writes."""
+    yy, xx = np.mgrid[0:H, 0:W]
+    scene = np.full((H, W), 0.08, np.float32)
+    srng = np.random.default_rng(11)             # same star field every frame
+    stars = list(zip(srng.uniform(40, W - 40, 60), srng.uniform(40, H - 40, 60), srng.uniform(0.2, 0.8, 60)))
+    for sx, sy, amp in stars:
+        x0, y0 = int(sx + shift[0]), int(sy + shift[1])
+        ys, xs = slice(max(0, y0 - 8), y0 + 9), slice(max(0, x0 - 8), x0 + 9)
+        sub_yy, sub_xx = yy[ys, xs], xx[ys, xs]
+        scene[ys, xs] += amp * np.exp(-(((sub_xx - sx - shift[0]) ** 2 + (sub_yy - sy - shift[1]) ** 2) / (2 * 2.2 ** 2))).astype(np.float32)
+    gain = np.ones((H, W), np.float32)          # GRBG: (0,0)=G (0,1)=R (1,0)=B (1,1)=G
+    gain[0::2, 1::2] = 0.9                      # R
+    gain[1::2, 0::2] = 0.6                      # B  -> sky is redder than blue
+    frame = scene * gain + rng.normal(0, 0.004, (H, W)).astype(np.float32)
+    return np.clip(frame * 65535, 0, 65535).astype(np.uint16)
+
+
+def test_seestar_myworks_layout(tmp_path):
+    """MyWorks/M81/ holds the finished stack; MyWorks/M81_sub/ holds the
+    Light_*.fit sub-frames with GRBG in the header, plus a .jpg and _thn.jpg
+    per sub. The night is one session named M81, debayered as GRBG."""
+    from astropy.io import fits
+    from PIL import Image
+    rng = np.random.default_rng(3)
+    works = tmp_path / "MyWorks"
+    res, sub = works / "M81", works / "M81_sub"
+    res.mkdir(parents=True); sub.mkdir()
+    # the finished stack the scope made (RGB planes) + its jpg
+    fits.PrimaryHDU(np.zeros((3, 1080, 1920), np.uint16)).writeto(res / "M81.fit")
+    Image.new("RGB", (1920, 1080)).save(res / "M81.jpg")
+    for i in range(10):
+        name = f"Light_M 81_10.0s_IRCUT_20260328-2245{i:02d}"
+        hdu = fits.PrimaryHDU(_seestar_frame(rng, shift=(rng.integers(-6, 6), rng.integers(-6, 6))))
+        hdu.header["BAYERPAT"] = "GRBG"
+        hdu.header["EXPTIME"] = 10.0
+        hdu.header["INSTRUME"] = "Seestar S50"
+        hdu.writeto(sub / f"{name}.fit")
+        Image.new("RGB", (1920, 1080)).save(sub / f"{name}.jpg")
+        Image.new("RGB", (192, 108)).save(sub / f"{name}_thn.jpg")
+
+    found = ss.find_sessions(str(works))
+    assert [os.path.basename(p) for p in found] == ["M81_sub"]          # not M81 too
+    assert ss.session_name(str(sub)) == "M81"
+
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "starstack.py"), str(works), "-j", "2"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "debayering as GRBG" in r.stdout
+    assert "10 files that are thumbnails" in r.stdout        # _thn.jpg removed by name, as one line
+    assert "10 files that are JPEGs next to real frames" in r.stdout
+    assert "10 actual subs" in r.stdout
+    assert "integration   1m 40s" in r.stdout               # 10 x 10 s
+    out = works / "stacks" / "M81.tif"
+    assert out.exists()
+    import tifffile
+    img = tifffile.imread(str(out)).astype(np.float32)
+    assert img.shape == (1080, 1920, 3)
+    r_med, b_med = np.median(img[..., 0]), np.median(img[..., 2])
+    assert r_med > b_med * 1.2, f"colour swapped? R={r_med} B={b_med}"   # GRBG honoured, not RGGB
+
+
 # ------------------------------------------------------------ end to end ----
 @pytest.fixture(scope="module")
 def synthetic(tmp_path_factory):

@@ -318,7 +318,7 @@ def assess_quality(frames: list, log, keep_all: bool, use_weights: bool):
                 reasons[f.path] = ("blurry", f"blurry: FWHM {f.fwhm:.1f} px vs {fw_m:.1f} median")
             elif f.stars < 0.5 * st_m:
                 reasons[f.path] = ("starved", f"starved: {f.stars} stars vs {st_m:.0f} median")
-            elif f.bg > bg_m + 3.0 * bg_s:
+            elif f.bg > bg_m + max(3.0 * bg_s, 0.03 * bg_m):     # 3 MADs, and at least 3% brighter
                 reasons[f.path] = ("cloudy", f"cloudy/bright: background {f.bg:.4f} vs {bg_m:.4f} median")
         # never throw away more than a quarter of the session on a bad night
         cap = int(0.25 * len(have))
@@ -355,8 +355,11 @@ def assess_quality(frames: list, log, keep_all: bool, use_weights: bool):
 
 
 def match_levels(img: np.ndarray, ref_med: float, ref_scale: float) -> np.ndarray:
-    """Additive + multiplicative normalization so frames combine cleanly."""
-    sample = img.reshape(-1)[::7]
+    """Additive + multiplicative normalization so frames combine cleanly.
+    Statistics come from the LUMINANCE, same as the reference's, and one
+    transform is applied to all channels -- measuring across R, G and B at
+    once would count the colour separation as 'spread' and squash it."""
+    sample = luminance(img).reshape(-1)[::7]
     sample = sample[np.isfinite(sample)]
     if sample.size == 0:
         return img
@@ -637,7 +640,7 @@ LAYOUT_DIRS = {"lights": "light", "light": "light", "darks": "dark", "dark": "da
                "flat_darks": "darkflat", "flatdarks": "darkflat"}
 FLAT_WORDS = ("flat",)
 BIAS_WORDS = ("bias", "offset")
-EXTRA_WORDS = ("preview", "thumb", "stacksum", "stacked", "final")
+EXTRA_WORDS = ("preview", "thumb", "_thn", "stacksum", "stacked", "final")
 
 
 def layout_dirs(folder: str) -> dict:
@@ -689,16 +692,11 @@ def sort_folder(folder: str, dry_run: bool, log) -> int:
     dest_for = {"light": "lights", "dark": "darks", "flat": "flats", "bias": "bias",
                 "darkflat": "darkflats", "extra": "extras"}
     plan = {}
+    have_raw = any(os.path.splitext(n)[1].lower() in (FITS_EXT | {".tif", ".tiff"}) for n in names)
     for n in names:
         kind = classify_name(n)
-        if kind == "light":
-            # a lone 8-bit file among 16-bit subs is a preview, not a light
-            try:
-                _, _, bits = probe(os.path.join(folder, n))
-            except Exception:
-                bits = 0
-            if bits == 8 and n.lower().endswith((".jpg", ".jpeg")):
-                kind = "extra"
+        if kind == "light" and have_raw and n.lower().endswith((".jpg", ".jpeg")):
+            kind = "extra"                          # a JPEG next to raw frames is a preview
         plan.setdefault(dest_for[kind], []).append(n)
     log(f"sorting {folder}" + (" (dry run -- nothing moves)" if dry_run else ""))
     for sub in ("lights", "darks", "flats", "darkflats", "bias", "extras"):
@@ -727,17 +725,33 @@ def sort_folder(folder: str, dry_run: bool, log) -> int:
     return 0
 
 
+def seestar_subs(folder: str):
+    """Seestar keeps a target's results in `M81/` and its sub-frames next door
+    in `M81_sub/`. Given either, return the `_sub` folder if it exists and
+    holds images; else None."""
+    folder = folder.rstrip("/\\")
+    cand = folder if folder.lower().endswith("_sub") else folder + "_sub"
+    return cand if os.path.isdir(cand) and _has_images(cand) else None
+
+
 def find_sessions(folder: str):
     """Whole-night mode: a folder that holds no frames itself but has
     subfolders that do (an Odyssey `unistellar_observations` download, a
-    night's worth of Seestar targets). Returns the session folders, or []."""
+    Seestar MyWorks folder, a night of sorted targets). Returns the session
+    folders, or []."""
     if any(ch in folder for ch in "*?[") or not os.path.isdir(folder) or _has_images(folder):
         return []
     if layout_dirs(folder):                     # lights/ darks/ ... = one session
         return []
     subs = sorted(os.path.join(folder, d) for d in os.listdir(folder)
                   if os.path.isdir(os.path.join(folder, d)))
-    return [d for d in subs if _has_images(d) or layout_dirs(d)]
+    out = []
+    for d in subs:
+        if seestar_subs(d) and not d.lower().endswith("_sub"):
+            continue                            # `M81/` (finished stacks): its subs are in M81_sub/
+        if _has_images(d) or layout_dirs(d):
+            out.append(d)
+    return out
 
 
 def session_name(folder: str) -> str:
@@ -752,6 +766,8 @@ def session_name(folder: str) -> str:
         except Exception:
             name = None
     name = (name or os.path.basename(folder.rstrip("/\\"))).strip()
+    if name.lower().endswith("_sub"):           # Seestar: M81_sub -> M81
+        name = name[:-4]
     return re.sub(r'[<>:"/\\|?*]+', "-", name).strip(" .") or "stack"
 
 
@@ -843,6 +859,12 @@ def run(args):
 
     # ---- discover -----------------------------------------------------------
     import glob as _glob
+    if not any(ch in args.folder for ch in "*?[") and os.path.isdir(args.folder):
+        sub = seestar_subs(args.folder)
+        if sub and os.path.abspath(sub) != os.path.abspath(args.folder.rstrip("/\\")):
+            log(f"that's the Seestar results folder. The actual sub-frames are next door in "
+                f"{os.path.basename(sub)}/. Using those.")
+            args.folder = sub
     layout = {} if any(ch in args.folder for ch in "*?[") else layout_dirs(args.folder)
     if layout:
         # Seestar-style: lights/ darks/ (flats/ bias/) subfolders
@@ -954,24 +976,38 @@ def run(args):
     # Things that live next to the subs but are not subs: the scope's own
     # finished stack, a stretched 8-bit preview, a thumbnail. They must not
     # be stacked and above all must not become the reference frame.
-    NOT_A_SUB = ("preview", "thumb", "stacksum", "stacked", "master", "final")
-    major_bits = Counter(f.bits for f in lights).most_common(1)[0][0]
+    NOT_A_SUB = ("preview", "thumb", "_thn", "stacksum", "stacked", "master", "final")
+    RAW_EXT = FITS_EXT | {".tif", ".tiff"}
+    have_raw = any(os.path.splitext(f.path)[1].lower() in RAW_EXT for f in lights)
+    max_bits = max((f.bits for f in lights), default=16)
+    groups = {}                                  # what -> [names], so 700 jpgs are one line, not 700
     for f in lights:
         name = os.path.basename(f.path).lower()
-        why = None
-        grumble = None
+        ext = os.path.splitext(name)[1]
+        why = what = None
         if any(w in name for w in NOT_A_SUB):
             why = "not a sub, judging by its name"
-            what = ("a JPEG" if name.endswith((".jpg", ".jpeg")) else
-                    "a finished stack" if "stack" in name else "not a sub")
-            grumble = f"found {os.path.basename(f.path)}. That's {what}. Removed it from the pile. You're welcome."
-        elif f.bits == 8 and major_bits >= 16:
-            why = f"8-bit file among {major_bits}-bit subs (a preview, not data)"
-            grumble = (f"found {os.path.basename(f.path)}: 8-bit, in a pile of {major_bits}-bit subs. "
-                       f"That's a preview, not data. Removed it. You're welcome.")
+            what = ("a thumbnail" if "_thn" in name or "thumb" in name else
+                    "a finished stack" if "stack" in name else
+                    "a JPEG" if ext in (".jpg", ".jpeg") else "not a sub")
+        elif have_raw and ext in (".jpg", ".jpeg"):
+            why = "JPEG among raw frames (a preview, not data)"
+            what = "a JPEG next to real frames"
+        elif f.bits == 8 and max_bits >= 16:
+            why = f"8-bit file among {max_bits}-bit subs (a preview, not data)"
+            what = f"8-bit, in a pile of {max_bits}-bit subs"
         if why:
             f.kind, f.status, f.note = "skip", "skipped", why
-            log(grumble)
+            groups.setdefault(what, []).append(os.path.basename(f.path))
+    plural = {"a thumbnail": "thumbnails", "a finished stack": "finished stacks", "a JPEG": "JPEGs",
+              "a JPEG next to real frames": "JPEGs next to real frames", "not a sub": "not subs"}
+    for what, names in groups.items():
+        if len(names) <= 3:
+            for n in names:
+                log(f"found {n}. That's {what}. Removed it from the pile. You're welcome.")
+        else:
+            log(f"found {len(names)} files that are {plural.get(what, what)} ({names[0]} and friends). "
+                f"Removed them from the pile. You're welcome.")
     lights = [f for f in lights if f.kind == "light"]
     darks = [f for f in frames if f.kind == "dark" and f.status == "pending"]
     if not lights:

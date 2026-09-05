@@ -47,12 +47,25 @@ def is_session(folder):
     return os.path.isdir(folder) and (has_images(folder) or is_sorted(folder))
 
 
+def night_sessions(folder):
+    """Session folders under a night, Seestar-aware: `M81/` (results) and
+    `M81_sub/` (frames) count once, as the `_sub`."""
+    out = []
+    for d in sorted(os.listdir(folder)):
+        p = os.path.join(folder, d)
+        if not os.path.isdir(p) or not is_session(p):
+            continue
+        if not d.lower().endswith("_sub") and os.path.isdir(p + "_sub") and has_images(p + "_sub"):
+            continue
+        out.append(p)
+    return out
+
+
 def is_night(folder):
     """A folder of session folders rather than a folder of frames."""
     if not os.path.isdir(folder) or is_session(folder):
         return False
-    return any(is_session(os.path.join(folder, d)) for d in os.listdir(folder)
-               if os.path.isdir(os.path.join(folder, d)))
+    return bool(night_sessions(folder))
 
 
 def target_name(folder):
@@ -619,7 +632,7 @@ class App(tk.Tk):
         if not os.path.isdir(f):
             self.mode_lbl.config(text=""); return
         if is_night(f):
-            n = sum(1 for d in os.listdir(f) if is_session(os.path.join(f, d)))
+            n = len(night_sessions(f))
             self.mode_lbl.config(text=f"whole night: {n} session folders. One press does all of them.")
             return
         elif is_sorted(f):

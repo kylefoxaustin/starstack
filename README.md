@@ -77,7 +77,7 @@ evening. It reads what is there and gets on with it.
   `BAYERPAT` header. TIFF/PNG have no header, so it looks at the pixels: a
   mosaic has four 2×2 phases with different means and a matching green pair
   on one diagonal; a mono or already-colour image doesn't. When it sees a
-  mosaic it assumes RGGB (Unistellar, Seestar) and says so. Force with
+  mosaic it assumes RGGB (Unistellar) and says so. Force with
   `--debayer RGGB`; `--debayer none` for frames that are already colour.
 - **Judges every frame and drops the bad ones.** Each sub gets measured
   before it's warped: star count, background, noise, and a median star FWHM
@@ -282,8 +282,16 @@ FITS header, or the same as a JSON description tag in a TIFF.
   file that makes Siril's `stack` fail with "different sizes"), `preview.jpg`
   and `manifest.json` (read for target/exposure/gain). Point the tool at the
   session folder as-is; it sorts all of that out.
-- **Seestar**: sub-frames from the S50 are RGGB Bayer FITS with `BAYERPAT`
-  set. Auto works.
+- **Seestar S50**: sub-frames are 1080×1920 16-bit FITS with `BAYERPAT =
+  'GRBG'` in the header (not RGGB -- the header is what starstack reads, so
+  it gets this right without being told). The scope keeps a target's results
+  in `MyWorks/M81/` and the frames next door in `MyWorks/M81_sub/`, as
+  `Light_M 81_10.0s_IRCUT_<timestamp>.fit` with a `.jpg` and a `_thn.jpg`
+  beside every one of them. Point starstack at `MyWorks` and each `_sub`
+  folder is one session named after the target, the results folder is not
+  mistaken for a second one, and the 1,400 JPEGs are removed from the pile
+  in two lines. Point it at `M81/` by mistake and it says "that's the results
+  folder, the frames are next door" and uses them.
 - Files that came *out of Siril* are 32-bit float, already-debayered or
   already-converted. That's why other stackers think they're finished
   products. This tool doesn't care — it reads them like anything else.
@@ -320,8 +328,11 @@ starstack-button
 ```
 
 `pytest -q` runs the test suite: unit tests for the Bayer detector, dark
-detection and session discovery, plus an end-to-end stack of a synthetic
-data set that checks the hot pixels actually died. CI runs it on every push.
+detection, session discovery and the sorter, an end-to-end stack of a
+synthetic data set that checks the hot pixels actually died, and a synthetic
+Seestar `MyWorks` layout (GRBG header, `_sub` folder, JPEG and thumbnail
+per frame) that checks the layout is read as one session and the colours
+come out the right way round. CI runs it on every push.
 
 `make_test_data.py` generates a synthetic 40-frame Bayer data set (with
 darks, hot pixels, a satellite, truncated frames and a corrupt file) if you
