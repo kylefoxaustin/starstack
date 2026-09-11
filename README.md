@@ -126,6 +126,33 @@ Each target gets a `.tif`, a `_look.png` preview and (with `--report`) a
 session folder. One session failing does not sink the night. The output
 folder from a previous run is recognised and not mistaken for a session.
 
+## Straight off the scope: `--pull`
+
+Skip the download step entirely. `--pull` fetches your new observations off a
+Unistellar Odyssey with [scopepull](https://github.com/kylefoxaustin/scopepull)
+and then stacks them -- telescope to stacked image, one command:
+
+```
+starstack --pull                     # pull everything new, stack every session
+starstack --pull --pull-target M81   # just one object
+starstack --pull ~/Astro/tonight     # pull into (and stack) a folder you choose
+```
+
+The owl gets on the scope's Wi-Fi API, downloads only what you don't already
+have (verified, organised, raw Bayer + FITS), and hands the archive straight to
+the stacker. Nothing new on the scope? It just stacks what's already there.
+
+`--pull` needs scopepull on your PATH -- it's a separate, isolated install so it
+never touches starstack's own dependencies:
+
+```
+uv tool install scopepull      # or:  pipx install scopepull
+```
+
+Then enable **Direct Data Download** in the Unistellar app (once), join the
+scope's Wi-Fi (`Odyssey-xxxx`), and run `starstack --pull`. If scopepull isn't
+installed, the owl tells you how to get it and carries on being a stacker.
+
 ## Sorted folders, and sorting one
 
 Seestar saves a target as `lights/` and `darks/` subfolders. starstack reads

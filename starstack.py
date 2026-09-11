@@ -568,6 +568,49 @@ def autostretch(img: np.ndarray, shadow_clip: float = -2.8, target_bg: float = 0
 # main
 # ----------------------------------------------------------------------------
 
+def run_scopepull(folder, target, log):
+    """Fetch new observations off the scope with scopepull, then return the
+    archive folder to stack (or None on a hard failure). Shells out to the
+    `scopepull` command so starstack has no hard dependency on it for plain
+    stacking. scopepull deposits one subfolder per observation, which is
+    exactly what whole-night mode already knows how to stack.
+    """
+    import shutil
+    import subprocess
+
+    exe = shutil.which("scopepull")
+    if not exe:
+        log("owl wants to fetch from the scope, but scopepull isn't installed.")
+        log("  install:  uv tool install scopepull   (or)   pipx install scopepull")
+        log("  then:     starstack --pull")
+        log("  docs:     https://github.com/kylefoxaustin/scopepull")
+        return None
+
+    dest = folder or os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
+    cmd = [exe, "pull", "--new", "--dest", dest]
+    if target:
+        cmd += ["--target", target]
+    log(f"owl is on the scope:  {' '.join(cmd)}")
+    try:
+        rc = subprocess.run(cmd).returncode
+    except OSError as e:
+        log(f"couldn't run scopepull: {e}")
+        return None
+
+    # scopepull exit codes: 0 ok, 2 nothing new, 3 unreachable, 4 DDD off, 5 partial.
+    if rc == 3:
+        log("scope unreachable -- are you on its Wi-Fi (Odyssey-xxxx)?")
+        return None
+    if rc == 4:
+        log("Direct Data Download is off -- enable it in the Unistellar app, then retry.")
+        return None
+    if rc == 2:
+        log("nothing new on the scope; stacking what's already in the archive.")
+    elif rc == 5:
+        log("some observations didn't finish (they'll retry next --pull); stacking the rest.")
+    return dest
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="starstack",
@@ -575,7 +618,13 @@ def main(argv=None):
                     "No sequence files, no process folder, no opinions about your workflow.",
     )
     p.add_argument("--version", action="version", version=f"starstack {__version__}")
-    p.add_argument("folder", help="folder of frames (or a glob)")
+    p.add_argument("folder", nargs="?", default=None,
+                   help="folder of frames (or a glob). Optional with --pull.")
+    p.add_argument("--pull", action="store_true",
+                   help="fetch new observations off the scope with scopepull, then stack them "
+                        "(needs scopepull: uv tool install scopepull)")
+    p.add_argument("--pull-target", default=None, metavar="TEXT",
+                   help="with --pull: only fetch observations whose target matches TEXT")
     p.add_argument("-o", "--out", default="stacked.tif",
                    help="output file; .tif/.tiff or .fit/.fits (default: stacked.tif)")
     p.add_argument("--method", choices=["sigma", "mean", "median"], default="sigma")
@@ -610,9 +659,17 @@ def main(argv=None):
     p.add_argument("--no-log", action="store_true", help="don't write a .log next to the output")
     p.add_argument("-q", "--quiet", action="store_true")
     args = p.parse_args(argv)
+    log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+
+    if args.pull:
+        dest = run_scopepull(args.folder, args.pull_target, log)
+        if dest is None:
+            return 3
+        args.folder = dest
+    if args.folder is None:
+        p.error("a folder is required (or use --pull to fetch from the scope first)")
 
     if args.sort:
-        log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
         sessions = find_sessions(args.folder)
         if sessions:
             rc = 0

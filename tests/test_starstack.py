@@ -298,3 +298,67 @@ def test_stack_end_to_end(synthetic, tmp_path):
     hot_excess = float(np.median(lum[hy, hx]) - bg)
     assert hot_excess < 0.005, f"hot pixels survived: {hot_excess}"
     assert stacked.shape[:2] == (1094, 1452)
+
+
+# ------------------------------------------------- scopepull --pull --------
+def test_run_scopepull_missing_command(monkeypatch):
+    """No scopepull on PATH -> a helpful message and None (not a crash)."""
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    msgs = []
+    dest = ss.run_scopepull(None, None, lambda *a: msgs.append(" ".join(map(str, a))))
+    assert dest is None
+    assert any("scopepull" in m for m in msgs)
+
+
+def test_run_scopepull_builds_command_and_returns_dest(monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/scopepull")
+    seen = {}
+
+    class _R:
+        returncode = 0
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return _R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    dest = ss.run_scopepull(str(tmp_path), "M81", lambda *a: None)
+    assert dest == str(tmp_path)
+    assert seen["cmd"] == [
+        "/usr/bin/scopepull", "pull", "--new", "--dest", str(tmp_path), "--target", "M81",
+    ]
+
+
+def test_run_scopepull_default_dest_when_no_folder(monkeypatch):
+    import os
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
+    seen = {}
+
+    class _R:
+        returncode = 2  # nothing new -> still stack what's there
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return _R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    dest = ss.run_scopepull(None, None, lambda *a: None)
+    assert dest == os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
+    assert "--target" not in seen["cmd"]
+
+
+def test_run_scopepull_unreachable_returns_none(monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
+
+    class _R:
+        returncode = 3  # scope unreachable
+
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _R())
+    assert ss.run_scopepull(str(tmp_path), None, lambda *a: None) is None

@@ -18,3 +18,5 @@ dist/
 
 # root-level previews / outputs from local runs
 /*.png
+uv.lock
+.venv/
