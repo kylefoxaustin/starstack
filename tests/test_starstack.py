@@ -301,6 +301,20 @@ def test_stack_end_to_end(synthetic, tmp_path):
 
 
 # ------------------------------------------------- scopepull --pull --------
+class _Ran:
+    """A fake subprocess.run: one return code for `pull`, a canned `status`."""
+
+    def __init__(self, rc=0, status_out="Archive root: /astro/archive\n1 observation(s)\n"):
+        self.rc, self.status_out, self.cmds = rc, status_out, []
+
+    def __call__(self, cmd, **kw):
+        self.cmds.append(cmd)
+        r = type("R", (), {})()
+        r.returncode = 0 if cmd[1] == "status" else self.rc
+        r.stdout = self.status_out if cmd[1] == "status" else ""
+        return r
+
+
 def test_run_scopepull_missing_command(monkeypatch):
     """No scopepull on PATH -> a helpful message and None (not a crash)."""
     import shutil
@@ -315,50 +329,94 @@ def test_run_scopepull_builds_command_and_returns_dest(monkeypatch, tmp_path):
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/scopepull")
-    seen = {}
-
-    class _R:
-        returncode = 0
-
-    def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
-        return _R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    ran = _Ran(rc=0)
+    monkeypatch.setattr(subprocess, "run", ran)
     dest = ss.run_scopepull(str(tmp_path), "M81", lambda *a: None)
     assert dest == str(tmp_path)
-    assert seen["cmd"] == [
+    assert ran.cmds == [[
         "/usr/bin/scopepull", "pull", "--new", "--dest", str(tmp_path), "--target", "M81",
-    ]
+    ]]                                            # a named folder is passed as --dest; status not asked
 
 
-def test_run_scopepull_default_dest_when_no_folder(monkeypatch):
+def test_run_scopepull_asks_scopepull_where_the_archive_is(monkeypatch, tmp_path):
+    """No folder given: do NOT force --dest (that would override the user's
+    scopepull config); ask `scopepull status` for the archive root instead."""
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
+    ran = _Ran(rc=2, status_out=f"Archive root: {tmp_path}\n0 observation(s) archived\n")
+    monkeypatch.setattr(subprocess, "run", ran)
+    dest = ss.run_scopepull(None, None, lambda *a: None)   # rc 2 = nothing new -> still stack
+    assert dest == str(tmp_path)
+    assert ran.cmds[0][:2] == ["scopepull", "status"]
+    assert ran.cmds[1] == ["scopepull", "pull", "--new"]  # no --dest, no --target
+
+
+def test_run_scopepull_default_root_when_status_is_unhelpful(monkeypatch):
     import os
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
-    seen = {}
-
-    class _R:
-        returncode = 2  # nothing new -> still stack what's there
-
-    def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
-        return _R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    dest = ss.run_scopepull(None, None, lambda *a: None)
-    assert dest == os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
-    assert "--target" not in seen["cmd"]
+    monkeypatch.setattr(subprocess, "run", _Ran(rc=2, status_out="garbage"))
+    monkeypatch.setattr(os.path, "isdir", lambda p: True)
+    assert ss.run_scopepull(None, None, lambda *a: None) == \
+        os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
 
 
-def test_run_scopepull_unreachable_returns_none(monkeypatch, tmp_path):
+@pytest.mark.parametrize("rc", [3, 4, 1, 7])
+def test_run_scopepull_failures_return_none(monkeypatch, tmp_path, rc):
+    """3 unreachable, 4 DDD off, anything unknown (1 = scopepull crashed):
+    do not stack blind on top of a failed pull."""
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
+    monkeypatch.setattr(subprocess, "run", _Ran(rc=rc))
+    msgs = []
+    assert ss.run_scopepull(str(tmp_path), None, lambda *a: msgs.append(" ".join(a))) is None
+    assert msgs[-1]                                        # it said why
 
-    class _R:
-        returncode = 3  # scope unreachable
 
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _R())
-    assert ss.run_scopepull(str(tmp_path), None, lambda *a: None) is None
+def test_run_scopepull_missing_archive_is_not_a_traceback(monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
+    monkeypatch.setattr(subprocess, "run", _Ran(rc=0))
+    msgs = []
+    gone = str(tmp_path / "never_created")
+    assert ss.run_scopepull(gone, None, lambda *a: msgs.append(" ".join(a))) is None
+    assert "no archive" in msgs[-1]
+
+
+def test_whole_night_skips_sessions_already_stacked(tmp_path):
+    """Run a night twice: the second run stacks nothing, says so, and exits 0.
+    --restack does it again. A session with newer frames is re-done."""
+    import time
+    night = tmp_path / "night"
+    _fake_frames(night / "A", 5)
+    _fake_frames(night / "B", 5)
+    cmd = [sys.executable, os.path.join(ROOT, "starstack.py"), str(night), "-j", "2", "--no-align"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "2/2 sessions stacked" in r.stdout
+    out_a = night / "stacks" / "A.tif"
+    m1 = out_a.stat().st_mtime
+
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.count("already stacked this one") == 2
+    assert "0/2 sessions stacked" in r.stdout and "2 already done" in r.stdout
+    assert "nothing new to stack" in r.stdout
+    assert out_a.stat().st_mtime == m1                    # untouched
+
+    # new frames land in B -> B is re-stacked, A still skipped
+    time.sleep(1.1)
+    _fake_frames(night / "B", 2, prefix="late")
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.count("already stacked this one") == 1
+    assert "1/2 sessions stacked" in r.stdout
+
+    r = subprocess.run(cmd + ["--restack"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "already stacked this one" not in r.stdout
+    assert "2/2 sessions stacked" in r.stdout

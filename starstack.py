@@ -586,8 +586,16 @@ def run_scopepull(folder, target, log):
         log("  docs:     https://github.com/kylefoxaustin/scopepull")
         return None
 
-    dest = folder or os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
-    cmd = [exe, "pull", "--new", "--dest", dest]
+    # Where the archive lives is scopepull's decision (its config.toml has an
+    # archive_root). Only override it with --dest when the user named a folder;
+    # otherwise ask scopepull where it keeps things, so --pull never starts a
+    # second archive next to the one they configured.
+    cmd = [exe, "pull", "--new"]
+    dest = folder
+    if dest:
+        cmd += ["--dest", dest]
+    else:
+        dest = scopepull_archive_root(exe)
     if target:
         cmd += ["--target", target]
     log(f"owl is on the scope:  {' '.join(cmd)}")
@@ -598,6 +606,7 @@ def run_scopepull(folder, target, log):
         return None
 
     # scopepull exit codes: 0 ok, 2 nothing new, 3 unreachable, 4 DDD off, 5 partial.
+    # Anything else is scopepull falling over; don't stack blind after that.
     if rc == 3:
         log("scope unreachable -- are you on its Wi-Fi (Odyssey-xxxx)?")
         return None
@@ -608,7 +617,31 @@ def run_scopepull(folder, target, log):
         log("nothing new on the scope; stacking what's already in the archive.")
     elif rc == 5:
         log("some observations didn't finish (they'll retry next --pull); stacking the rest.")
+    elif rc != 0:
+        log(f"scopepull exited with code {rc} and no explanation the owl recognises. "
+            f"Not stacking on top of that. Run it by itself to see what it's upset about.")
+        return None
+    if not os.path.isdir(dest):
+        log(f"scopepull says it's done, but there's no archive at {dest}. Nothing to stack.")
+        return None
     return dest
+
+
+def scopepull_archive_root(exe: str) -> str:
+    """Ask scopepull where its archive is (`scopepull status` prints
+    'Archive root: <path>'). Falls back to its documented default."""
+    import subprocess
+    default = os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
+    try:
+        out = subprocess.run([exe, "status"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return default
+    for line in out.splitlines():
+        if line.strip().lower().startswith("archive root:"):
+            path = line.split(":", 1)[1].strip()
+            if path:
+                return os.path.expanduser(path)
+    return default
 
 
 def main(argv=None):
@@ -641,6 +674,8 @@ def main(argv=None):
     p.add_argument("--sort", action="store_true",
                    help="don't stack: sort a one-pile folder into lights/ darks/ flats/ bias/ extras/ and stop")
     p.add_argument("--dry-run", action="store_true", help="with --sort: show the plan, move nothing")
+    p.add_argument("--restack", action="store_true",
+                   help="whole-night mode: re-stack sessions whose output already exists and is up to date")
     p.add_argument("--keep-all", action="store_true",
                    help="skip the quality pass: no frame is dropped for being blurry, cloudy or starved")
     p.add_argument("--no-weights", action="store_true",
@@ -938,6 +973,12 @@ def run_batch(args, sessions):
         a.preview = os.path.join(out_dir, name + "_look.png")
         a.report = os.path.join(out_dir, name + "_frames.csv") if args.report else None
         log("\n" + "=" * 46 + f"\n[{i}/{len(sessions)}] {name}\n" + "=" * 46)
+        done_when = already_stacked(sess, a.out)
+        if done_when and not getattr(args, "restack", False):
+            log(f"  already stacked this one on {done_when}, and nothing in the folder has "
+                f"changed since. Skipping. --restack if you've changed your mind.")
+            results.append((name, "already stacked", a.out))
+            continue
         try:
             rc = run(a)
             results.append((name, "ok" if rc == 0 else f"exit {rc}", a.out))
@@ -951,11 +992,35 @@ def run_batch(args, sessions):
     for name, status, out in results:
         log(f"  {name:<32} {status}")
     ok = sum(1 for r in results if r[1] == "ok")
-    log(f"  {ok}/{len(results)} sessions stacked in {time.time()-t0:.0f}s  ->  {out_dir}")
+    done = sum(1 for r in results if r[1] == "already stacked")
+    log(f"  {ok}/{len(results)} sessions stacked in {time.time()-t0:.0f}s"
+        + (f", {done} already done" if done else "") + f"  ->  {out_dir}")
     log("-" * 46)
-    log("done. all of it. go to bed.")
+    log("done. all of it. go to bed." if ok else "nothing new to stack. Go to bed anyway.")
     log.close()
-    return 0 if ok else 1
+    return 0 if ok or done else 1
+
+
+def already_stacked(session: str, out_path: str):
+    """Whole-night mode gets re-run: after --pull, after a second night lands
+    in the archive, out of habit. A session whose output already exists and is
+    newer than every frame in it does not need 17 minutes of M81 again.
+    Returns the output's date string if so, else None."""
+    if not os.path.exists(out_path):
+        return None
+    try:
+        out_m = os.path.getmtime(out_path)
+        newest = 0.0
+        for root, dirs, files in os.walk(session):
+            dirs[:] = [d for d in dirs if not d.lower().endswith(".partial")]
+            for f in files:
+                if os.path.splitext(f)[1].lower() in IMAGE_EXT | {".json"}:
+                    newest = max(newest, os.path.getmtime(os.path.join(root, f)))
+    except OSError:
+        return None
+    if newest and newest < out_m:
+        return time.strftime("%a %b %d", time.localtime(out_m))
+    return None
 
 
 def run(args):

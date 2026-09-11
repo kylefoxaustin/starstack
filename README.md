@@ -124,7 +124,11 @@ done. all of it. go to bed.
 Each target gets a `.tif`, a `_look.png` preview and (with `--report`) a
 `_frames.csv`. Two sessions of the same target keep both, suffixed by the
 session folder. One session failing does not sink the night. The output
-folder from a previous run is recognised and not mistaken for a session.
+folder from a previous run is recognised and not mistaken for a session, and
+a session whose output already exists and is newer than its frames is
+skipped ("already stacked this one on Tue Sep 09 ... Skipping."), so re-running
+a night after a new target lands only stacks the new target. `--restack` if
+you've changed your mind about the old ones.
 
 ## Straight off the scope: `--pull`
 
@@ -133,14 +137,22 @@ Unistellar Odyssey with [scopepull](https://github.com/kylefoxaustin/scopepull)
 and then stacks them -- telescope to stacked image, one command:
 
 ```
-starstack --pull                     # pull everything new, stack every session
-starstack --pull --pull-target M81   # just one object
-starstack --pull ~/Astro/tonight     # pull into (and stack) a folder you choose
+python starstack.py --pull                     # pull everything new, stack every session
+python starstack.py --pull --pull-target M81   # just one object
+python starstack.py --pull ~/Astro/tonight     # pull into (and stack) a folder you choose
 ```
+
+(`starstack --pull` if you `pip install`ed it; `starstack.exe --cli --pull`
+from the Windows build.)
 
 The owl gets on the scope's Wi-Fi API, downloads only what you don't already
 have (verified, organised, raw Bayer + FITS), and hands the archive straight to
-the stacker. Nothing new on the scope? It just stacks what's already there.
+the stacker. With no folder named it stacks scopepull's own archive, wherever
+scopepull's config says that is. Nothing new on the scope? It stacks what's
+already there -- which, thanks to the already-stacked rule above, means it
+does nothing and says so, rather than another twenty minutes of M81. If
+scopepull fails (scope unreachable, Direct Data Download off, or it crashed)
+the owl says why and does not stack blind.
 
 `--pull` needs scopepull on your PATH -- it's a separate, isolated install so it
 never touches starstack's own dependencies:
@@ -335,6 +347,8 @@ takes out.
 | `-j N` | worker processes (default: CPU count, max 8) |
 | `--report file.csv` | per-frame status, plus stars / FWHM / background / noise / weight |
 | `--sort` / `--sort --dry-run` | sort a one-pile folder into lights/ darks/ ... and stop |
+| `--pull` / `--pull-target TEXT` | fetch new observations off the scope with scopepull first, then stack the archive |
+| `--restack` | whole-night mode: redo sessions whose output already exists and is up to date |
 | `--scratch DIR` | where the temporary cube goes (default: system temp) |
 | `--no-log` | don't write the .log next to the output |
 | `-q` | quiet |
