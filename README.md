@@ -252,6 +252,42 @@ not the finished picture; it's the raw material for one. Stretch it in
 whatever you like — AstroWizards, Siril (this is the part of Siril that is
 fine), GraXpert, Photoshop, GIMP.
 
+### What the owl hands you, and what you do with it
+
+Left: the `_look.png` preview starstack writes, straight off the stack — a
+plain auto-stretch of the linear data, sky gradient and all. Right: the same
+stack after AstroWizards did the gradient removal, stretch, colour and
+sharpening. **The owl stacks. It does not do the pretty part.** Both nights
+were pulled off the Odyssey with scopepull and stacked from the archive
+folder, untouched.
+
+<table>
+  <tr>
+    <th align="center">starstack output</th>
+    <th align="center">finished in AstroWizards</th>
+  </tr>
+  <tr>
+    <td><img src="docs/m81_stack.jpg" alt="M81 straight out of starstack: linear stack, auto-stretched preview" width="440"></td>
+    <td><img src="docs/m81_final.jpg" alt="M81 after processing in AstroWizards" width="440"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><i>M81, Bode's Galaxy</i></td>
+  </tr>
+  <tr>
+    <td><img src="docs/m82_stack.jpg" alt="M82 straight out of starstack: linear stack, auto-stretched preview" width="440"></td>
+    <td><img src="docs/m82_final.jpg" alt="M82 after processing in AstroWizards" width="440"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><i>M82, the Cigar Galaxy — edge-on, bright starburst core, dust lanes across it</i></td>
+  </tr>
+</table>
+
+The point of the left column is what's *not* wrong with it: round stars to
+the corners, a core that isn't clipped, dust lanes that survived the sigma
+clip, colour that is warm where it should be. The gradient is the sky over
+Austin, faithfully recorded, and is the first thing any processing tool
+takes out.
+
 <img src="docs/button.png" align="right" width="110" alt="the button">
 
 ## Options you may want
@@ -402,7 +438,9 @@ Bayer frames with 400 hot pixels, a satellite streak, three truncated frames
 - a synthetic scopepull archive (two nights, TIFF+FITS twins, a `.partial`
   pull in progress, `reference/` decoys): every observation stacked from
   the whole archive root, each frame counted once, `reference/` untouched,
-  outputs named from `observation.json`
+  outputs named from `observation.json` — and then the real thing: M81 and
+  M82 pulled with scopepull and stacked by the button from the archive
+  folder, end to end (the before/after pairs under *Output*)
 
 ## The owl
 
