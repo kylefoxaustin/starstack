@@ -155,11 +155,16 @@ scopepull fails (scope unreachable, Direct Data Download off, or it crashed)
 the owl says why and does not stack blind.
 
 `--pull` needs scopepull on your PATH -- it's a separate, isolated install so it
-never touches starstack's own dependencies:
+never touches starstack's own dependencies. It installs straight from GitHub
+(scopepull isn't on PyPI yet), no account needed:
 
 ```
-uv tool install scopepull      # or:  pipx install scopepull
+uv tool install git+https://github.com/kylefoxaustin/scopepull
+# or:  pipx install git+https://github.com/kylefoxaustin/scopepull
 ```
+
+Both need Python 3.11 or newer on the machine (scopepull's requirement, not
+starstack's -- starstack itself is happy on 3.10).
 
 Then enable **Direct Data Download** in the Unistellar app (once), join the
 scope's Wi-Fi (`Odyssey-xxxx`), and run `starstack --pull`. If scopepull isn't
@@ -418,12 +423,22 @@ launch takes a few seconds while it unpacks itself. No installer, nothing
 in the registry, delete the file and it's gone. `starstack.exe --cli ...`
 is the full command line, same flags as below.
 
+No account anywhere: not GitHub to download it, not PyPI, nothing. The one
+thing that will get in the way is Windows SmartScreen. The exe isn't
+code-signed (certificates cost real money every year; this is a hobby
+project), so the first time you run a freshly downloaded copy Windows says
+"Windows protected your PC". Click **More info**, then **Run anyway**. It
+asks once per download. If you'd rather not take a stranger's word for it,
+the source is right here and `build_exe.bat` makes the same file on your
+own machine.
+
 To build that exe yourself: `build_exe.bat` (needs Python; it installs
 PyInstaller and produces `dist\starstack.exe`). Releases are built by
 GitHub Actions on a Windows runner whenever a `v*` tag is pushed.
 
 **Have Python?** Either way works; the second gives you a `starstack`
-command you can run from anywhere.
+command you can run from anywhere. `pip` downloads from PyPI without any
+account -- accounts are for people *uploading* packages, not installing them.
 
 ```
 git clone https://github.com/kylefoxaustin/starstack
