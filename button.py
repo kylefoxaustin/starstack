@@ -35,8 +35,9 @@ def has_images(folder):
 
 
 def is_sorted(folder):
-    """Seestar-style layout: a lights/ subfolder with frames in it."""
-    for d in ("lights", "light"):
+    """Sorted layout: a lights/ subfolder with frames in it (Seestar), or
+    frames/ (a scopepull observation)."""
+    for d in ("lights", "light", "frames"):
         p = os.path.join(folder, d)
         if os.path.isdir(p) and has_images(p):
             return True
@@ -47,13 +48,20 @@ def is_session(folder):
     return os.path.isdir(folder) and (has_images(folder) or is_sorted(folder))
 
 
-def night_sessions(folder):
+def night_sessions(folder, deeper=True):
     """Session folders under a night, Seestar-aware: `M81/` (results) and
-    `M81_sub/` (frames) count once, as the `_sub`."""
+    `M81_sub/` (frames) count once, as the `_sub`. A scopepull archive root
+    (<root>/<date>/<observation>/) is a folder of nights; one level down."""
     out = []
     for d in sorted(os.listdir(folder)):
         p = os.path.join(folder, d)
-        if not os.path.isdir(p) or not is_session(p):
+        if not os.path.isdir(p) or d.lower().endswith(".partial"):
+            continue
+        if d.lower() == "stacks" and os.path.exists(os.path.join(p, "night.log")):
+            continue                                        # our own earlier output
+        if not is_session(p):
+            if deeper and not has_images(p):
+                out += night_sessions(p, deeper=False)
             continue
         if not d.lower().endswith("_sub") and os.path.isdir(p + "_sub") and has_images(p + "_sub"):
             continue
@@ -70,15 +78,18 @@ def is_night(folder):
 
 def target_name(folder):
     """Name the output after the target when the scope tells us."""
-    mpath = os.path.join(folder, "manifest.json")
     name = None
-    if os.path.exists(mpath):
-        try:
-            import json
-            with open(mpath) as fh:
-                name = json.load(fh).get("nameTarget")
-        except Exception:
-            pass
+    for fname, key in (("manifest.json", None), ("observation.json", "scope_manifest")):
+        mpath = os.path.join(folder, fname)
+        if os.path.exists(mpath):
+            try:
+                import json
+                with open(mpath) as fh:
+                    mf = json.load(fh)
+                name = ((mf.get(key) or {}) if key else mf).get("nameTarget")
+                break
+            except Exception:
+                pass
     name = (name or os.path.basename(folder.rstrip("/\\"))).strip()
     for ch in '<>:"/\\|?*':
         name = name.replace(ch, "-")

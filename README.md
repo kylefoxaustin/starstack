@@ -101,9 +101,10 @@ evening. It reads what is there and gets on with it.
 ## Whole-night mode
 
 Point it at the folder *above* the sessions -- the `unistellar_observations`
-download from an Odyssey, a night of Seestar targets, anything with one
-subfolder per target -- and it stacks every session in turn, naming each
-output after the target from the scope's manifest when there is one:
+download from an Odyssey, a night of Seestar targets, a scopepull archive,
+anything with one subfolder per target -- and it stacks every session in
+turn, naming each output after the target from the scope's manifest when
+there is one:
 
 ```
 python starstack.py "unistellar_observations (1)"
@@ -152,6 +153,35 @@ It classifies by the same rules the stacker uses, moves files into
 leaves `manifest.json` and anything that isn't an image where it was, never
 copies, and prints every group so it's reversible. Run it on a whole night
 and every session gets sorted. Run it twice and it shrugs.
+
+## scopepull archives
+
+If you pull observations off the Odyssey with
+[scopepull](https://github.com/kylefoxaustin/scopepull) instead of the app,
+each one lands as its own folder:
+
+```
+~/Astro/odyssey/2026-01-31/m81-bode-s-galaxy__38102043/
+├── frames/          StackInput .tiff + .fits twins   <- lights
+├── calibration/     DarkframeMean .tiff + .fits      <- the dark
+├── reference/       StackSum.tiff, preview.jpg       <- the scope's own stack; ignored
+└── observation.json                                  <- the manifest, plus pull info
+```
+
+starstack reads that as-is. Point it at one observation, at a night
+(`2026-01-31/`), or at the whole archive (`~/Astro/odyssey/`) and it does the
+right thing at each level: `frames/` are the lights, `calibration/` the dark,
+`reference/` is never opened, and the output is named from the manifest
+inside `observation.json`. Every frame exists twice in there (the scope's
+TIFF and scopepull's FITS of the same pixels, with `BAYERPAT`, `EXPTIME` and
+friends filled in); it uses the FITS and says so, rather than stacking each
+frame twice. An observation still downloading (`*.partial`) is left alone.
+
+```
+scopepull archive: frames/, calibration/. reference/ is the scope's own stack; not touching it.
+  711 frames come as both TIFF and FITS of the same pixels. Using the FITS -- it has the headers. The TIFFs are not being stacked twice.
+scopepull pull: M81 - Bode's Galaxy  710 x 4.0s, gain 20, IMX415.  The scope itself gave up on 15 of them. We'll see.
+```
 
 ## The button
 
@@ -281,7 +311,11 @@ FITS header, or the same as a JSON description tag in a TIFF.
   dark), `StackSum.tiff` (the scope's own finished stack, 1452×1088, the
   file that makes Siril's `stack` fail with "different sizes"), `preview.jpg`
   and `manifest.json` (read for target/exposure/gain). Point the tool at the
-  session folder as-is; it sorts all of that out.
+  session folder as-is; it sorts all of that out. Note the manifest says the
+  *sensor* is `BAYER_GBRG`; the exported pixels are RGGB (the export flips
+  rows). starstack measures the pixels, so it doesn't care what the manifest
+  claims. Pulled with [scopepull](https://github.com/kylefoxaustin/scopepull)
+  instead? See *scopepull archives* above -- same data, tidier folder.
 - **Seestar S50**: sub-frames are 1080×1920 16-bit FITS with `BAYERPAT =
   'GRBG'` in the header (not RGGB -- the header is what starstack reads, so
   it gets this right without being told). The scope keeps a target's results
@@ -362,6 +396,13 @@ Bayer frames with 400 hot pixels, a satellite streak, three truncated frames
 - the same frames re-exported as headerless 16-bit TIFFs (what the Odyssey
   portal gives you): mosaic detected from pixels, debayered RGGB, stacked to
   colour with darks applied
+- a synthetic Seestar `MyWorks` night (GRBG FITS, a `.jpg` and `_thn.jpg`
+  per sub, results folder next door): one session, JPEGs removed in two
+  lines, GRBG honoured
+- a synthetic scopepull archive (two nights, TIFF+FITS twins, a `.partial`
+  pull in progress, `reference/` decoys): every observation stacked from
+  the whole archive root, each frame counted once, `reference/` untouched,
+  outputs named from `observation.json`
 
 ## The owl
 

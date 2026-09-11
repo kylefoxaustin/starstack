@@ -169,6 +169,96 @@ def test_seestar_myworks_layout(tmp_path):
     assert r_med > b_med * 1.2, f"colour swapped? R={r_med} B={b_med}"   # GRBG honoured, not RGGB
 
 
+def _odyssey_frame(rng, H=1094, W=1452, shift=(0, 0)):
+    """An Odyssey-shaped RGGB mosaic with a few stars (16-bit)."""
+    yy, xx = np.mgrid[0:H, 0:W]
+    img = np.full((H, W), 2000.0)
+    for _ in range(40):
+        cy, cx = rng.uniform(40, H - 40) + shift[0], rng.uniform(40, W - 40) + shift[1]
+        img += rng.uniform(4000, 20000) * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / 8.0)
+    gain = np.ones((H, W))
+    gain[0::2, 0::2] = 1.45          # R
+    gain[1::2, 1::2] = 1.07          # B
+    img = img * gain + rng.normal(0, 60, (H, W))
+    return np.clip(img, 0, 65535).astype(np.uint16)
+
+
+def _scopepull_observation(d, rng, n, target):
+    """What scopepull's ingest writes: frames/ (TIFF + FITS twins),
+    calibration/ (dark, twins too), reference/ (StackSum + preview.jpg),
+    observation.json with the scope manifest inside."""
+    import json
+    import tifffile
+    from astropy.io import fits
+    from PIL import Image
+    for sub in ("frames", "calibration", "reference"):
+        (d / sub).mkdir(parents=True)
+    for i in range(n):
+        stem = d / "frames" / f"20260131T0{i:02d}_StackInput"
+        fr = _odyssey_frame(rng, shift=(rng.integers(-5, 5), rng.integers(-5, 5)))
+        tifffile.imwrite(str(stem) + ".tiff", fr)
+        h = fits.PrimaryHDU(fr)
+        h.header["BAYERPAT"] = "RGGB"; h.header["SENSPAT"] = "GBRG"; h.header["EXPTIME"] = 4.0
+        h.writeto(str(stem) + ".fits")
+    dark = (rng.normal(2000, 30, (1094, 1452))).clip(0, 65535).astype(np.uint16)
+    tifffile.imwrite(str(d / "calibration" / "20260131T000_DarkframeMean.tiff"), dark)
+    fits.PrimaryHDU(dark).writeto(str(d / "calibration" / "20260131T000_DarkframeMean.fits"))
+    tifffile.imwrite(str(d / "reference" / "20260131T999_StackSum.tiff"),
+                     np.zeros((1088, 1452), np.uint16))          # the Siril-breaker
+    Image.new("RGB", (1452, 1094)).save(d / "reference" / "preview.jpg")
+    (d / "observation.json").write_text(json.dumps({
+        "scope_manifest": {"nameTarget": target, "expo": 3970000, "gain": 20,
+                           "sensor": "IMX415", "obs_attr": {"frames_saved": n, "frames_stacked": n - 1}},
+        "catalog": {}, "pulled_at": "2026-02-01T05:00:00+00:00", "bayer_pattern": "RGGB"}))
+    (d / "SHA256SUMS").write_text("")
+
+
+def test_scopepull_archive_layout(tmp_path):
+    """A scopepull archive is <root>/<date>/<observation>/. Pointed at the
+    root it stacks every observation of every night; each observation is
+    lights from frames/ (FITS, not the TIFF twins), the dark from
+    calibration/, nothing from reference/, named from observation.json."""
+    rng = np.random.default_rng(5)
+    root = tmp_path / "odyssey"
+    _scopepull_observation(root / "2026-01-31" / "m81-bode-s-galaxy__38102043", rng, 8, "M81 - Bode's Galaxy")
+    _scopepull_observation(root / "2026-02-01" / "m27__38102099", rng, 6, "M27 - Dumbbell Nebula")
+    (root / "2026-02-01" / "m13__38102100.partial" / "frames").mkdir(parents=True)   # mid-pull
+    (root / "2026-02-01" / "m13__38102100.partial" / "frames" / "x_StackInput.tiff").write_bytes(b"junk")
+
+    one = str(root / "2026-01-31" / "m81-bode-s-galaxy__38102043")
+    assert set(ss.layout_dirs(one)) == {"light", "dark"}            # reference/ is not a kind
+    assert ss.session_name(one) == "M81 - Bode's Galaxy"
+    night = ss.find_sessions(str(root / "2026-02-01"))
+    assert [os.path.basename(p) for p in night] == ["m27__38102099"]   # .partial skipped
+    whole = ss.find_sessions(str(root))
+    assert [os.path.basename(p) for p in whole] == ["m81-bode-s-galaxy__38102043", "m27__38102099"]
+    kept, dropped = ss.prefer_fits(sorted(str(p) for p in (root / "2026-01-31" / "m81-bode-s-galaxy__38102043" / "frames").iterdir()))
+    assert dropped == 8 and all(p.endswith(".fits") for p in kept)
+
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "starstack.py"), str(root), "-j", "2"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    log = r.stdout
+    assert "whole night: 2 session folders" in log
+    assert "scopepull archive: frames/, calibration/" in log or "scopepull archive: calibration/, frames/" in log
+    assert "9 frames come as both TIFF and FITS" in log            # 8 lights + 1 dark, first session
+    assert "scopepull pull: M81 - Bode's Galaxy  8 x 4.0s, gain 20, IMX415" in log
+    assert "8 lights, 1 dark" in log
+    assert "debayering as RGGB" in log
+    assert "StackSum" not in log and "preview" not in log          # reference/ never entered the pile
+    assert "2/2 sessions stacked" in log
+    out = root / "stacks" / "M81 - Bode's Galaxy.tif"
+    assert out.exists() and (root / "stacks" / "M27 - Dumbbell Nebula.tif").exists()
+    import tifffile
+    img = tifffile.imread(str(out)).astype(np.float32)
+    assert img.shape == (1094, 1452, 3)
+    assert np.median(img[..., 0]) > np.median(img[..., 2]) * 1.2    # RGGB honoured: R > B
+
+    # a re-run must not mistake stacks/ (which now holds TIFFs) for a session
+    assert [os.path.basename(p) for p in ss.find_sessions(str(root))] == \
+        ["m81-bode-s-galaxy__38102043", "m27__38102099"]
+
+
 # ------------------------------------------------------------ end to end ----
 @pytest.fixture(scope="module")
 def synthetic(tmp_path_factory):

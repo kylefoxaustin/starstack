@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -637,7 +637,12 @@ def _has_images(folder: str) -> bool:
 LAYOUT_DIRS = {"lights": "light", "light": "light", "darks": "dark", "dark": "dark",
                "flats": "flat", "flat": "flat", "bias": "bias", "biases": "bias",
                "offset": "bias", "darkflats": "darkflat", "dark_flats": "darkflat",
-               "flat_darks": "darkflat", "flatdarks": "darkflat"}
+               "flat_darks": "darkflat", "flatdarks": "darkflat",
+               # scopepull archive (github.com/kylefoxaustin/scopepull): one
+               # observation = frames/ calibration/ reference/ observation.json.
+               # reference/ holds the scope's own StackSum and preview.jpg --
+               # deliberately not in this table, so it is never read.
+               "frames": "light", "calibration": "dark"}
 FLAT_WORDS = ("flat",)
 BIAS_WORDS = ("bias", "offset")
 EXTRA_WORDS = ("preview", "thumb", "_thn", "stacksum", "stacked", "final")
@@ -656,6 +661,48 @@ def layout_dirs(folder: str) -> dict:
     except OSError:
         pass
     return found if "light" in found else {}
+
+
+def prefer_fits(paths: list) -> tuple:
+    """scopepull writes every frame twice: the scope's TIFF verbatim and a
+    FITS of the same pixels with the headers filled in (BAYERPAT, EXPTIME,
+    DATE-OBS). Stacking both would count each frame twice. When a TIFF and a
+    FITS share a stem, keep the FITS -- it knows things the TIFF can't.
+    Returns (kept paths, number of TIFFs set aside)."""
+    stems = {}
+    for p in paths:
+        stem, ext = os.path.splitext(p)
+        stems.setdefault(stem.lower(), {})[ext.lower()] = p
+    kept, dropped = [], 0
+    for p in paths:
+        stem, ext = os.path.splitext(p)
+        ext = ext.lower()
+        twins = stems[stem.lower()]
+        if ext in (".tif", ".tiff") and any(e in twins for e in FITS_EXT):
+            dropped += 1
+            continue
+        kept.append(p)
+    return kept, dropped
+
+
+def read_manifest(folder: str) -> dict:
+    """The scope's own description of a session, if it left one.
+    Unistellar: manifest.json next to the frames. scopepull: observation.json
+    with the same manifest tucked under "scope_manifest". {} if neither."""
+    import json
+    for name, key in (("manifest.json", None), ("observation.json", "scope_manifest")):
+        p = os.path.join(folder, name)
+        if os.path.exists(p):
+            try:
+                with open(p) as fh:
+                    mf = json.load(fh)
+                mf = mf.get(key) if key else mf
+                if isinstance(mf, dict):
+                    mf["_source"] = name
+                    return mf
+            except Exception:
+                pass
+    return {}
 
 
 def classify_name(path: str) -> str:
@@ -734,11 +781,11 @@ def seestar_subs(folder: str):
     return cand if os.path.isdir(cand) and _has_images(cand) else None
 
 
-def find_sessions(folder: str):
+def find_sessions(folder: str, _deeper: bool = True):
     """Whole-night mode: a folder that holds no frames itself but has
     subfolders that do (an Odyssey `unistellar_observations` download, a
-    Seestar MyWorks folder, a night of sorted targets). Returns the session
-    folders, or []."""
+    Seestar MyWorks folder, a night of sorted targets, a scopepull archive
+    or one night of it). Returns the session folders, or []."""
     if any(ch in folder for ch in "*?[") or not os.path.isdir(folder) or _has_images(folder):
         return []
     if layout_dirs(folder):                     # lights/ darks/ ... = one session
@@ -747,24 +794,25 @@ def find_sessions(folder: str):
                   if os.path.isdir(os.path.join(folder, d)))
     out = []
     for d in subs:
+        base = os.path.basename(d).lower()
+        if base.endswith(".partial"):           # scopepull mid-download; not ours yet
+            continue
+        if base == "stacks" and os.path.exists(os.path.join(d, "night.log")):
+            continue                            # our own output from an earlier run
         if seestar_subs(d) and not d.lower().endswith("_sub"):
             continue                            # `M81/` (finished stacks): its subs are in M81_sub/
         if _has_images(d) or layout_dirs(d):
             out.append(d)
+        elif _deeper:
+            # a scopepull archive root: <root>/2026-01-31/<observation>/frames/.
+            # One level down is a night; a whole archive is a folder of nights.
+            out += find_sessions(d, _deeper=False)
     return out
 
 
 def session_name(folder: str) -> str:
     """Name a session by its target when the scope tells us, else the folder."""
-    name = None
-    mpath = os.path.join(folder, "manifest.json")
-    if os.path.exists(mpath):
-        try:
-            import json
-            with open(mpath) as fh:
-                name = json.load(fh).get("nameTarget")
-        except Exception:
-            name = None
+    name = read_manifest(folder).get("nameTarget")
     name = (name or os.path.basename(folder.rstrip("/\\"))).strip()
     if name.lower().endswith("_sub"):           # Seestar: M81_sub -> M81
         name = name[:-4]
@@ -871,12 +919,20 @@ def run(args):
         def _imgs(d):
             return sorted(os.path.join(d, f) for f in os.listdir(d)
                           if os.path.splitext(f)[1].lower() in IMAGE_EXT)
-        paths = _imgs(layout["light"])
+        paths, twins = prefer_fits(_imgs(layout["light"]))
         frames = [Frame(path=p_) for p_ in paths]
         if "dark" in layout and not args.no_darks:
-            frames += [Frame(path=p_, kind="dark") for p_ in _imgs(layout["dark"])]
+            dpaths, dtwins = prefer_fits(_imgs(layout["dark"]))
+            twins += dtwins
+            frames += [Frame(path=p_, kind="dark") for p_ in dpaths]
         found = ", ".join(f"{os.path.basename(v)}/" for v in layout.values())
-        log(f"sorted layout: {found}. Someone raised this scope right.")
+        if "frames" in {os.path.basename(v).lower() for v in layout.values()}:
+            log(f"scopepull archive: {found}. reference/ is the scope's own stack; not touching it.")
+        else:
+            log(f"sorted layout: {found}. Someone raised this scope right.")
+        if twins:
+            log(f"  {twins} frames come as both TIFF and FITS of the same pixels. "
+                f"Using the FITS -- it has the headers. The TIFFs are not being stacked twice.")
         for extra in ("flat", "bias", "darkflat"):
             if extra in layout:
                 log(f"  {os.path.basename(layout[extra])}/ noted; not applied yet (flats are next on the list).")
@@ -889,6 +945,10 @@ def run(args):
             for f in os.listdir(args.folder)
             if os.path.splitext(f)[1].lower() in IMAGE_EXT
         )
+        paths, twins = prefer_fits(paths)       # pointed straight at scopepull's frames/
+        if twins:
+            log(f"{twins} frames come as both TIFF and FITS of the same pixels. "
+                f"Using the FITS -- it has the headers. The TIFFs are not being stacked twice.")
         frames = [Frame(path=p_) for p_ in paths]
     if not paths:
         sys.exit(f"no image files in {args.folder}. Nothing to stack. Check the path.")
@@ -930,20 +990,18 @@ def run(args):
     n_dark = sum(f.kind == "dark" for f in frames)
     log(f"{len(frames) - n_dark} lights, {n_dark} dark{'s' if n_dark != 1 else ''}. Fine.")
 
-    # Unistellar drops a manifest.json next to the frames; say what this is
+    # Unistellar drops a manifest.json next to the frames; scopepull keeps
+    # the same thing inside observation.json. Say what this is.
     session = {}
-    mpath = os.path.join(args.folder if os.path.isdir(args.folder) else
-                         os.path.dirname(paths[0]), "manifest.json")
-    if os.path.exists(mpath):
+    mf = read_manifest(args.folder if os.path.isdir(args.folder) else os.path.dirname(paths[0]))
+    if mf:
         try:
-            import json
-            with open(mpath) as fh:
-                mf = json.load(fh)
             session = {"target": mf.get("nameTarget"), "sensor": mf.get("sensor"),
                        "exposure_s": (mf.get("expo") or 0) / 1e6, "gain": mf.get("gain"),
                        "saved": (mf.get("obs_attr") or {}).get("frames_saved"),
                        "scope_stacked": (mf.get("obs_attr") or {}).get("frames_stacked")}
-            log(f"Unistellar session: {session['target']}  "
+            who = "scopepull pull" if mf.get("_source") == "observation.json" else "Unistellar session"
+            log(f"{who}: {session['target']}  "
                 f"{session['saved']} x {session['exposure_s']:.1f}s, gain {session['gain']}, "
                 f"{session['sensor']}.  The scope itself gave up on "
                 f"{(session['saved'] or 0) - (session['scope_stacked'] or 0)} of them. We'll see.")
