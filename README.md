@@ -155,16 +155,17 @@ scopepull fails (scope unreachable, Direct Data Download off, or it crashed)
 the owl says why and does not stack blind.
 
 `--pull` needs scopepull on your PATH -- it's a separate, isolated install so it
-never touches starstack's own dependencies. It installs straight from GitHub
-(scopepull isn't on PyPI yet), no account needed:
+never touches starstack's own dependencies. It's on
+[PyPI](https://pypi.org/project/scopepull/); no account needed:
 
 ```
-uv tool install git+https://github.com/kylefoxaustin/scopepull
-# or:  pipx install git+https://github.com/kylefoxaustin/scopepull
+uv tool install scopepull      # or:  pipx install scopepull
 ```
 
-Both need Python 3.11 or newer on the machine (scopepull's requirement, not
-starstack's -- starstack itself is happy on 3.10).
+(`uv tool install git+https://github.com/kylefoxaustin/scopepull` if you want
+whatever is on `main` today rather than the last release.) Either way needs
+Python 3.11 or newer on the machine -- scopepull's requirement, not
+starstack's; starstack itself is happy on 3.10.
 
 Then enable **Direct Data Download** in the Unistellar app (once), join the
 scope's Wi-Fi (`Odyssey-xxxx`), and run `starstack --pull`. If scopepull isn't
