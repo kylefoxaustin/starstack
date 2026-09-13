@@ -130,11 +130,12 @@ skipped ("already stacked this one on Tue Sep 09 ... Skipping."), so re-running
 a night after a new target lands only stacks the new target. `--restack` if
 you've changed your mind about the old ones.
 
-## Straight off the scope: `--pull`
+## Straight off the scope: `--pull` (Unistellar Odyssey Pro)
 
 Skip the download step entirely. `--pull` fetches your new observations off a
-Unistellar Odyssey with [scopepull](https://github.com/kylefoxaustin/scopepull)
-and then stacks them -- telescope to stacked image, one command:
+Unistellar Odyssey Pro with [scopepull](https://github.com/kylefoxaustin/scopepull)
+-- a puller written for that scope's API specifically; it doesn't know any
+other -- and then stacks them. Telescope to stacked image, one command:
 
 ```
 python starstack.py --pull                     # pull everything new, stack every session
@@ -143,7 +144,8 @@ python starstack.py --pull ~/Astro/tonight     # pull into (and stack) a folder 
 ```
 
 (`starstack --pull` if you `pip install`ed it; `starstack.exe --cli --pull`
-from the Windows build.)
+from the Windows build. In the window it's the **Odyssey** row: tick it and
+the button reads PULL+STACK.)
 
 The owl gets on the scope's Wi-Fi API, downloads only what you don't already
 have (verified, organised, raw Bayer + FITS), and hands the archive straight to
@@ -246,6 +248,20 @@ the stacker and its worker processes freeze where they stand (the owl shuts
 his eyes), press **RESUME** and they pick up exactly there. Nothing is lost;
 only the time-left estimate gets confused. **Stop** in the footer abandons
 the run for good.
+
+**Odyssey** is the row for people who own a Unistellar Odyssey Pro and have
+[scopepull](https://pypi.org/project/scopepull/) installed -- scopepull
+speaks the Odyssey's own download API and nothing else, so this row is for
+that scope only (Seestar owners: your frames are already on the SD card /
+MyWorks share; point the Folder row at them). Tick *Pull new observations off
+the Odyssey Pro first* and the big red button becomes
+**PULL+STACK**: on your scope's Wi-Fi, one press downloads whatever is new
+into scopepull's archive (or the folder you named, if you named one), then
+stacks the archive -- targets already stacked are skipped, so a quiet night
+costs seconds. A *target* box narrows the pull to one object. The row is
+greyed out, with the install command shown, until scopepull is found on your
+PATH. While the download runs the owl shuts his eyes; there is nothing to
+judge yet.
 
 **Options…** opens the overrides: every flag in the table below, with a plain
 name, the default marked, and a "Reset to how the owl likes it" button. The

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -600,7 +600,10 @@ def run_scopepull(folder, target, log):
         cmd += ["--target", target]
     log(f"owl is on the scope:  {' '.join(cmd)}")
     try:
-        rc = subprocess.run(cmd).returncode
+        # no console window when we're the button's hidden CLI child on Windows;
+        # from a real terminal the inherited handles still carry the output
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+        rc = subprocess.run(cmd, creationflags=flags).returncode
     except OSError as e:
         log(f"couldn't run scopepull: {e}")
         return None
@@ -633,7 +636,9 @@ def scopepull_archive_root(exe: str) -> str:
     import subprocess
     default = os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
     try:
-        out = subprocess.run([exe, "status"], capture_output=True, text=True, timeout=30).stdout
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+        out = subprocess.run([exe, "status"], capture_output=True, text=True, timeout=30,
+                             creationflags=flags).stdout
     except (OSError, subprocess.SubprocessError):
         return default
     for line in out.splitlines():

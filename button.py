@@ -127,7 +127,7 @@ class Button(tk.Canvas):
         self.create_oval(c - r, c - r - lift, c + r, c + r - lift, fill=col, outline="")
         self.create_oval(c - r * 0.55, c - r * 0.85 - lift, c + r * 0.15, c - r * 0.45 - lift,
                          fill=RED_LIT if self.enabled else "#8a5a55", outline="", stipple="gray50")
-        size_pt = int(s * (0.17 if len(self.label) <= 5 else 0.13))
+        size_pt = int(s * (0.17 if len(self.label) <= 5 else 0.13 if len(self.label) <= 8 else 0.105))
         self.create_text(c, c - lift + 2, text=self.label, fill="#fff4ee",
                          font=("Impact", size_pt) if sys.platform.startswith("win") else ("DejaVu Sans", int(size_pt * 0.82), "bold"))
 
@@ -221,6 +221,8 @@ DEFAULTS = {
     "jobs": 0,             # 0 = let it pick
     "out_dir": "",         # "" = next to the frames (stacked/ or stacks/)
     "scratch": "",         # "" = system temp; the 10+ GB cube goes here
+    "pull": False,         # fetch new observations off an Odyssey Pro (scopepull) before stacking
+    "pull_target": "",     # with pull: only observations whose target matches this
 }
 LABELS = {  # what the main window says when something is off-default
     "bits16": lambda v: None if v else "32-bit",
@@ -236,6 +238,8 @@ LABELS = {  # what the main window says when something is off-default
     "jobs": lambda v: None if not v else f"{v} workers",
     "out_dir": lambda v: None,          # shown in its own row, not the summary
     "scratch": lambda v: None if not v else f"scratch: {v}",
+    "pull": lambda v: None,             # has its own row too
+    "pull_target": lambda v: None,
 }
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".starstack.json")
 
@@ -293,6 +297,39 @@ def summarize(s):
     parts = [LABELS[k](s[k]) for k in DEFAULTS]
     parts = [p for p in parts if p]
     return ("options: " + ", ".join(parts)) if parts else ""
+
+
+# ---------------------------------------------------------------------------
+# scopepull: the fetch half. starstack shells out to it; the button just needs
+# to know whether it's there and where it keeps the archive.
+# ---------------------------------------------------------------------------
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+
+
+def probe_scopepull():
+    """(version, archive_root) if scopepull is on PATH, else (None, None).
+    Runs two quick commands; call it off the UI thread."""
+    import shutil
+    exe = shutil.which("scopepull")
+    if not exe:
+        return None, None
+    version, root = "?", None
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20,
+                             creationflags=NO_WINDOW).stdout
+        version = out.strip().split()[-1] if out.strip() else "?"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        out = subprocess.run([exe, "status"], capture_output=True, text=True, timeout=30,
+                             creationflags=NO_WINDOW).stdout
+        for line in out.splitlines():
+            if line.strip().lower().startswith("archive root:"):
+                root = os.path.expanduser(line.split(":", 1)[1].strip())
+                break
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return version, root or os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
 
 
 class OptionsDialog(tk.Toplevel):
@@ -467,7 +504,8 @@ class App(tk.Tk):
         words = tk.Frame(top, bg=NAVY); words.pack(side="left", fill="x", expand=True)
         tk.Label(words, text="starstack", fg=CREAM, bg=NAVY, font=(SANS[0], 30, "bold")).pack(anchor="w")
         tk.Label(words, text="Stacking for people who'd rather be looking up.", fg="#c9cfe0", bg=NAVY, font=SANS).pack(anchor="w")
-        self.mode_lbl = tk.Label(words, text="", fg=MUTE, bg=NAVY, font=MONO); self.mode_lbl.pack(anchor="w", pady=(6, 0))
+        self.mode_lbl = tk.Label(words, text="", fg=MUTE, bg=NAVY, font=MONO, justify="left", wraplength=520)
+        self.mode_lbl.pack(anchor="w", pady=(6, 0))
 
         self.button = Button(top, size=150, command=self.stack); self.button.pack(side="right")
 
@@ -480,6 +518,29 @@ class App(tk.Tk):
         e.pack(side="left", fill="x", expand=True, ipady=6)
         tk.Button(row, text="Browse…", command=self.browse, bg=NAVY2, fg=CREAM, activebackground="#22304a",
                   activeforeground=CREAM, relief="flat", padx=12, font=SANS).pack(side="left", padx=(8, 0))
+
+        # the Odyssey row: fetch off a Unistellar Odyssey Pro with scopepull before
+        # stacking. scopepull speaks that scope's API and no other.
+        # greyed out until a background probe finds scopepull on PATH.
+        srow = tk.Frame(self, bg=NAVY); srow.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Label(srow, text="Odyssey", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
+        self.pull_var = tk.BooleanVar(value=bool(self.settings.get("pull")))
+        self.pull_chk = tk.Checkbutton(srow, text="Pull new observations off the Odyssey Pro first", variable=self.pull_var,
+                                       bg=NAVY, fg="#c9cfe0", selectcolor=NAVY2, activebackground=NAVY,
+                                       activeforeground=CREAM, font=SANS, highlightthickness=0, bd=0,
+                                       state="disabled", command=self._pull_changed)
+        self.pull_chk.pack(side="left")
+        tk.Label(srow, text="target", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(14, 6))
+        self.pull_target = tk.StringVar(value=self.settings.get("pull_target", ""))
+        self.pull_target.trace_add("write", lambda *_: self._pull_changed())
+        tk.Entry(srow, textvariable=self.pull_target, width=12, bg=NAVY2, fg=CREAM, insertbackground=CREAM,
+                 relief="flat", font=MONO).pack(side="left", ipady=4)
+        shint = tk.Frame(self, bg=NAVY); shint.pack(fill="x", padx=18, pady=(0, 6))
+        tk.Label(shint, text="", bg=NAVY, font=SANS, width=7).pack(side="left", padx=(0, 8))   # under "Odyssey"
+        self.scope_lbl = tk.Label(shint, text="looking for scopepull…", fg=MUTE, bg=NAVY, font=(SANS[0], 9), anchor="w")
+        self.scope_lbl.pack(side="left", fill="x")
+        self.scopepull = (None, None)
+        threading.Thread(target=self._probe_scopepull, daemon=True).start()
 
         orow = tk.Frame(self, bg=NAVY); orow.pack(fill="x", padx=18, pady=(0, 8))
         tk.Label(orow, text="Output", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
@@ -587,6 +648,38 @@ class App(tk.Tk):
             self.after_cancel(self._blink_job)
         self._blink_job = self.after(random.randint(2500, 6000), self._blink)
 
+    # ---- the scope ----------------------------------------------------------
+    def _probe_scopepull(self):
+        found = probe_scopepull()
+        self.q.put(("scopepull", found))
+
+    def _scopepull_found(self, found):
+        self.scopepull = found
+        version, root = found
+        if version is None:
+            self.scope_lbl.config(text="needs scopepull, the Unistellar Odyssey Pro puller:  pipx install scopepull  (Python 3.11+)")
+            self.pull_chk.config(state="disabled")
+            if self.pull_var.get():
+                self.pull_var.set(False)
+        else:
+            self.scope_lbl.config(text=f"scopepull {version} (Unistellar Odyssey Pro)  ·  archive: {root}")
+            self.pull_chk.config(state="normal")
+        self._pull_changed(save=False)
+
+    def _pull_changed(self, save=True):
+        on = bool(self.pull_var.get()) and self.scopepull[0] is not None
+        self.settings["pull"] = bool(self.pull_var.get())
+        self.settings["pull_target"] = self.pull_target.get().strip()
+        if save:
+            save_settings(self.settings)
+        if not self.running():
+            self.button.set_label("PULL+STACK" if on else "STACK")
+        self._describe()
+
+    def pulling(self):
+        """Is the next press a pull-then-stack?"""
+        return bool(self.pull_var.get()) and self.scopepull[0] is not None
+
     # ---- output folder ------------------------------------------------------
     PLACEHOLDER = "next to the frames  (stacked\\ for a session, stacks\\ for a night)"
 
@@ -640,6 +733,13 @@ class App(tk.Tk):
 
     def _describe(self):
         f = self.folder.get().strip().strip('"')
+        if getattr(self, "scopepull", (None, None))[0] is not None and self.pulling():
+            where = f or self.scopepull[1]
+            tgt = self.pull_target.get().strip()
+            what = f"new {tgt!r} observations" if tgt else "everything new"
+            self.mode_lbl.config(text=f"pull {what} off the Odyssey into {where}, then stack the archive "
+                                      f"(targets already stacked are skipped)")
+            return
         if not os.path.isdir(f):
             self.mode_lbl.config(text=""); return
         if is_night(f):
@@ -673,7 +773,8 @@ class App(tk.Tk):
         if self.proc and self.proc.poll() is None:          # running: the button pauses / resumes
             self.toggle_pause(); return
         f = self.folder.get().strip().strip('"')
-        if not os.path.isdir(f):
+        pull = self.pulling()
+        if not pull and not os.path.isdir(f):
             self.say("pick a folder first. I can't stack a feeling.\n", "bad"); return
         chosen = self.chosen_out_dir()
         if chosen and not os.path.isdir(chosen):
@@ -681,7 +782,14 @@ class App(tk.Tk):
                 os.makedirs(chosen, exist_ok=True)
             except OSError as e:
                 self.say(f"can't create the output folder {chosen}: {e}\n", "bad"); return
-        if is_night(f):
+        if pull:
+            # scopepull fills the archive (the folder box, or its own configured
+            # root); starstack then treats that archive as a night of nights.
+            archive = f or self.scopepull[1]
+            self.out_dir = chosen or os.path.join(archive, "stacks")
+            out_arg = self.out_dir
+            self.preview_path = None
+        elif is_night(f):
             self.out_dir = chosen or os.path.join(f, "stacks")
             out_arg = self.out_dir
             self.preview_path = None
@@ -695,9 +803,19 @@ class App(tk.Tk):
             self.say("no image files in that folder.\n", "bad"); return
 
         if FROZEN:
-            cmd = [sys.executable, "--cli", f, "-o", out_arg]   # the exe, in CLI mode
+            cmd = [sys.executable, "--cli"]                      # the exe, in CLI mode
         else:
-            cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), "-u", STARSTACK, f, "-o", out_arg]
+            cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), "-u", STARSTACK]
+        if pull:
+            cmd += ["--pull"]
+            tgt = self.pull_target.get().strip()
+            if tgt:
+                cmd += ["--pull-target", tgt]
+            if f:
+                cmd += [f]                                       # pull into (and stack) this folder
+        else:
+            cmd += [f]
+        cmd += ["-o", out_arg]
         if self.preview_path:
             cmd += ["--preview", self.preview_path]
         cmd += settings_to_args(self.settings)
@@ -708,7 +826,7 @@ class App(tk.Tk):
         self.preview_lbl.config(image="", text="working…")
         self.paused = False
         self.button.set_label("PAUSE"); self.stop_btn.config(state="normal"); self.open_btn.config(state="disabled")
-        self.status.config(text="stacking…")
+        self.status.config(text="on the scope…" if pull else "stacking…")
         self.set_face("focused")
         self._schedule_blink()
         threading.Thread(target=self._run, args=(cmd,), daemon=True).start()
@@ -742,13 +860,18 @@ class App(tk.Tk):
         try:
             while True:
                 kind, payload = self.q.get_nowait()
-                if kind == "line":
+                if kind == "scopepull":
+                    self._scopepull_found(payload)
+                elif kind == "line":
                     text = payload
                     tag = None
                     low = text.lower()
                     if "you're welcome" in low or "they know what they did" in low or "relax" in low or "go outside" in low or "go to bed" in low:
                         tag = "owl"
-                    elif "wouldn't" in low or "failed" in low or "couldn't" in low or "error" in low:
+                    elif "already stacked this one" in low or "nothing new on the scope" in low:
+                        tag = "owl"
+                    elif ("wouldn't" in low or "failed" in low or "couldn't" in low or "error" in low
+                          or "unreachable" in low or "not stacking" in low or "isn't installed" in low):
                         tag = "bad"
                     elif text.startswith("  used") or text.startswith("  output"):
                         tag = "good"
@@ -776,7 +899,15 @@ class App(tk.Tk):
 
     def _react(self, low):
         """Which grumpy, based on what the owl just said."""
-        if low.startswith("  registering") or "reference:" in low or "debayering" in low:
+        if "owl is on the scope" in low:
+            self.status.config(text="on the scope…")
+            self.set_face("waiting")            # nothing to do but wait for the download
+        elif low.startswith("whole night:") or low.startswith("[1/"):
+            self.status.config(text="stacking…")
+            self.set_face("focused")
+        elif "already stacked this one" in low:
+            self._glance("judging", "focused", 1500)
+        elif low.startswith("  registering") or "reference:" in low or "debayering" in low:
             if self.face != "focused":
                 self.set_face("focused")
         elif "combining" in low:
@@ -791,7 +922,8 @@ class App(tk.Tk):
 
     def _finished(self, rc):
         self.paused = False
-        self.button.set_label("STACK"); self.button.set_enabled(True); self.stop_btn.config(state="disabled")
+        self.button.set_label("PULL+STACK" if self.pulling() else "STACK")
+        self.button.set_enabled(True); self.stop_btn.config(state="disabled")
         self.open_btn.config(state="normal")
         if self._blink_job:
             self.after_cancel(self._blink_job); self._blink_job = None
