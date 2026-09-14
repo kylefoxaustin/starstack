@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.8"
+__version__ = "0.2.9"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -600,10 +600,7 @@ def run_scopepull(folder, target, log):
         cmd += ["--target", target]
     log(f"owl is on the scope:  {' '.join(cmd)}")
     try:
-        # no console window when we're the button's hidden CLI child on Windows;
-        # from a real terminal the inherited handles still carry the output
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
-        rc = subprocess.run(cmd, creationflags=flags).returncode
+        rc = relay(cmd, log)
     except OSError as e:
         log(f"couldn't run scopepull: {e}")
         return None
@@ -628,6 +625,39 @@ def run_scopepull(folder, target, log):
         log(f"scopepull says it's done, but there's no archive at {dest}. Nothing to stack.")
         return None
     return dest
+
+
+def relay(cmd, log) -> int:
+    """Run a helper and pass its output through our own stdout and log file.
+
+    Not `subprocess.run(cmd)` and hope it inherits stdout: on Windows, when
+    we are the button's console-less child, a child of ours started that way
+    gets no stdout at all and its progress vanishes (starstack 0.2.5-0.2.8
+    showed one line and then nothing for the whole download). So: a pipe,
+    read a byte at a time so scopepull's `\r` progress lines arrive as
+    `\r` lines, forwarded verbatim to stdout (the button replaces the last
+    line on `\r`) and, newline-terminated ones only, to the .log file."""
+    import subprocess
+    raw = getattr(log, "raw", None) or (lambda t: (sys.stdout.write(t), sys.stdout.flush()))
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         bufsize=0, creationflags=flags, env=env)
+    buf = bytearray()
+    try:
+        while True:
+            ch = p.stdout.read(1)
+            if not ch:
+                break
+            buf += ch
+            if ch in (b"\n", b"\r"):
+                raw(buf.decode("utf-8", "replace"))
+                buf.clear()
+        if buf:
+            raw(buf.decode("utf-8", "replace") + "\n")
+    finally:
+        p.stdout.close()
+    return p.wait()
 
 
 def scopepull_archive_root(exe: str) -> str:
@@ -699,7 +729,7 @@ def main(argv=None):
     p.add_argument("--no-log", action="store_true", help="don't write a .log next to the output")
     p.add_argument("-q", "--quiet", action="store_true")
     args = p.parse_args(argv)
-    log = (lambda *a: None) if args.quiet else (lambda *a: print(*a, flush=True))
+    log = Logger(args.quiet, None)               # screen only; run() opens the real .log later
 
     if args.pull:
         dest = run_scopepull(args.folder, args.pull_target, log)
@@ -936,6 +966,16 @@ class Logger:
             print(text, flush=True)
         if self.fh:
             self.fh.write(text + "\n")
+            self.fh.flush()
+
+    def raw(self, text):
+        """A helper's output, verbatim: `\r` progress lines go to the screen
+        only; finished lines go to the file too, indented as someone else's."""
+        if not self.quiet:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        if self.fh and text.endswith("\n"):
+            self.fh.write("  | " + text.lstrip("\r"))
             self.fh.flush()
 
     def close(self):

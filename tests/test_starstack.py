@@ -302,17 +302,23 @@ def test_stack_end_to_end(synthetic, tmp_path):
 
 # ------------------------------------------------- scopepull --pull --------
 class _Ran:
-    """A fake subprocess.run: one return code for `pull`, a canned `status`."""
+    """A fake for both ways starstack runs scopepull: subprocess.run for
+    `status` (canned output) and ss.relay for `pull` (one return code)."""
 
     def __init__(self, rc=0, status_out="Archive root: /astro/archive\n1 observation(s)\n"):
         self.rc, self.status_out, self.cmds = rc, status_out, []
 
-    def __call__(self, cmd, **kw):
+    def __call__(self, cmd, *a, **kw):
         self.cmds.append(cmd)
-        r = type("R", (), {})()
-        r.returncode = 0 if cmd[1] == "status" else self.rc
-        r.stdout = self.status_out if cmd[1] == "status" else ""
-        return r
+        if cmd[1] == "status":                    # subprocess.run(...).stdout
+            r = type("R", (), {})(); r.returncode, r.stdout = 0, self.status_out
+            return r
+        return self.rc                            # relay(cmd, log) -> exit code
+
+    def install(self, monkeypatch):
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", self)
+        monkeypatch.setattr(ss, "relay", self)
 
 
 def test_run_scopepull_missing_command(monkeypatch):
@@ -330,7 +336,7 @@ def test_run_scopepull_builds_command_and_returns_dest(monkeypatch, tmp_path):
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/scopepull")
     ran = _Ran(rc=0)
-    monkeypatch.setattr(subprocess, "run", ran)
+    ran.install(monkeypatch)
     dest = ss.run_scopepull(str(tmp_path), "M81", lambda *a: None)
     assert dest == str(tmp_path)
     assert ran.cmds == [[
@@ -345,7 +351,7 @@ def test_run_scopepull_asks_scopepull_where_the_archive_is(monkeypatch, tmp_path
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
     ran = _Ran(rc=2, status_out=f"Archive root: {tmp_path}\n0 observation(s) archived\n")
-    monkeypatch.setattr(subprocess, "run", ran)
+    ran.install(monkeypatch)
     dest = ss.run_scopepull(None, None, lambda *a: None)   # rc 2 = nothing new -> still stack
     assert dest == str(tmp_path)
     assert ran.cmds[0][:2] == ["scopepull", "status"]
@@ -357,7 +363,7 @@ def test_run_scopepull_default_root_when_status_is_unhelpful(monkeypatch):
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
-    monkeypatch.setattr(subprocess, "run", _Ran(rc=2, status_out="garbage"))
+    _Ran(rc=2, status_out="garbage").install(monkeypatch)
     monkeypatch.setattr(os.path, "isdir", lambda p: True)
     assert ss.run_scopepull(None, None, lambda *a: None) == \
         os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
@@ -370,7 +376,7 @@ def test_run_scopepull_failures_return_none(monkeypatch, tmp_path, rc):
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
-    monkeypatch.setattr(subprocess, "run", _Ran(rc=rc))
+    _Ran(rc=rc).install(monkeypatch)
     msgs = []
     assert ss.run_scopepull(str(tmp_path), None, lambda *a: msgs.append(" ".join(a))) is None
     assert msgs[-1]                                        # it said why
@@ -380,11 +386,35 @@ def test_run_scopepull_missing_archive_is_not_a_traceback(monkeypatch, tmp_path)
     import shutil
     import subprocess
     monkeypatch.setattr(shutil, "which", lambda name: "scopepull")
-    monkeypatch.setattr(subprocess, "run", _Ran(rc=0))
+    _Ran(rc=0).install(monkeypatch)
     msgs = []
     gone = str(tmp_path / "never_created")
     assert ss.run_scopepull(gone, None, lambda *a: msgs.append(" ".join(a))) is None
     assert "no archive" in msgs[-1]
+
+
+def test_relay_forwards_progress_lines_and_logs_finished_ones(tmp_path, capsys):
+    """scopepull's output must reach the button: through a pipe, `\r`
+    progress lines verbatim to stdout, newline-terminated lines to the .log
+    too. (0.2.5-0.2.8 let the child inherit stdout, which on Windows from a
+    console-less parent is nothing at all.)"""
+    script = tmp_path / "chatty.py"
+    script.write_text("import sys\n"
+                      "sys.stdout.write('Pulling 1 observation(s)\\n')\n"
+                      "sys.stdout.write('  [1/1] M31: building 3/10 frames\\r')\n"
+                      "sys.stdout.write('  [1/1] M31: building 10/10 frames\\r')\n"
+                      "sys.stdout.write('\\n  [1/1] M31: ingested 10 frames\\n')\n"
+                      "sys.exit(5)\n")
+    log = ss.Logger(False, str(tmp_path / "x.log"))
+    rc = ss.relay([sys.executable, str(script)], log)
+    log.close()
+    assert rc == 5
+    out = capsys.readouterr().out
+    assert "building 3/10 frames\r" in out and "building 10/10 frames\r" in out   # verbatim, for the button
+    assert "ingested 10 frames\n" in out
+    logged = (tmp_path / "x.log").read_text()
+    assert "  | Pulling 1 observation(s)" in logged and "  |   [1/1] M31: ingested 10 frames" in logged
+    assert "building 3/10" not in logged                                         # \r spam stays off disk
 
 
 def test_whole_night_skips_sessions_already_stacked(tmp_path):

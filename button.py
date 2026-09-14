@@ -573,9 +573,10 @@ class App(tk.Tk):
         tk.Label(row, text="Folder", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
         self.folder = tk.StringVar()
         self.folder.trace_add("write", lambda *_: self._describe())
-        e = tk.Entry(row, textvariable=self.folder, bg=NAVY2, fg=CREAM, insertbackground=CREAM,
-                     relief="flat", font=MONO)
-        e.pack(side="left", fill="x", expand=True, ipady=6)
+        self.folder_entry = tk.Entry(row, textvariable=self.folder, bg=NAVY2, fg=CREAM, insertbackground=CREAM,
+                                     relief="flat", font=MONO)
+        self.folder_entry.pack(side="left", fill="x", expand=True, ipady=6)
+        self._hint_bind(self.folder_entry, self.folder)
         tk.Button(row, text="Browse…", command=self.browse, bg=NAVY2, fg=CREAM, activebackground="#22304a",
                   activeforeground=CREAM, relief="flat", padx=12, font=SANS).pack(side="left", padx=(8, 0))
 
@@ -593,8 +594,10 @@ class App(tk.Tk):
         tk.Label(srow, text="target", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(14, 6))
         self.pull_target = tk.StringVar(value=self.settings.get("pull_target", ""))
         self.pull_target.trace_add("write", lambda *_: self._pull_changed())
-        tk.Entry(srow, textvariable=self.pull_target, width=12, bg=NAVY2, fg=CREAM, insertbackground=CREAM,
-                 relief="flat", font=MONO).pack(side="left", ipady=4)
+        self.target_entry = tk.Entry(srow, textvariable=self.pull_target, width=12, bg=NAVY2, fg=CREAM,
+                                     insertbackground=CREAM, relief="flat", font=MONO)
+        self.target_entry.pack(side="left", ipady=4)
+        self._hint_bind(self.target_entry, self.pull_target)
         shint = tk.Frame(self, bg=NAVY); shint.pack(fill="x", padx=18, pady=(0, 6))
         tk.Label(shint, text="", bg=NAVY, font=SANS, width=7).pack(side="left", padx=(0, 8))   # under "Odyssey"
         self.scope_lbl = tk.Label(shint, text="looking for scopepull…", fg=MUTE, bg=NAVY, font=(SANS[0], 9), anchor="w")
@@ -680,6 +683,7 @@ class App(tk.Tk):
         self.stop_btn.pack(side="left", padx=(8, 0))
         self.status = tk.Label(foot, text="pick a folder.", fg=MUTE, bg=NAVY, font=SANS); self.status.pack(side="right")
 
+        self._refresh_hints()
         if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
             # a folder was dropped on the button: that IS the button press
             self.folder.set(sys.argv[1])
@@ -711,6 +715,61 @@ class App(tk.Tk):
             self.after_cancel(self._blink_job)
         self._blink_job = self.after(random.randint(2500, 6000), self._blink)
 
+    # ---- grey hints in empty boxes ------------------------------------------
+    # What an empty box means, written in the box. The StringVar carries the
+    # hint text while it shows, so readers go through _real() to get "".
+    def _hint_bind(self, entry, var):
+        entry._hint_on = False
+        entry.bind("<FocusIn>", lambda e: self._hint_clear(entry, var))
+        entry.bind("<FocusOut>", lambda e: self._refresh_hints())
+
+    def _hint_clear(self, entry, var):
+        if getattr(entry, "_hint_on", False):
+            self._hinting = True
+            entry._hint_on = False
+            var.set("")
+            entry.config(fg=CREAM)
+            self._hinting = False
+
+    def _hint_set(self, entry, var, text):
+        """Show `text` greyed if the box is empty and not being typed in."""
+        self._hinting = True
+        try:
+            if getattr(entry, "_hint_on", False):
+                entry._hint_on = False
+                var.set("")
+            if text and not var.get().strip() and self.focus_get() is not entry:
+                entry._hint_on = True
+                entry._hint_text = text
+                entry.config(fg=MUTE)
+                var.set(text)
+            else:
+                entry.config(fg=CREAM)
+        finally:
+            self._hinting = False
+
+    def _real(self, entry, var):
+        """The box's real value: "" while it only shows its hint. A value set
+        from code (a folder dropped on the exe, a test) while the hint was up
+        counts as real and switches the hint off."""
+        if getattr(entry, "_hint_on", False):
+            if var.get() == getattr(entry, "_hint_text", None):
+                return ""
+            entry._hint_on = False
+            entry.config(fg=CREAM)
+        return var.get().strip().strip('"')
+
+    def _refresh_hints(self):
+        if not hasattr(self, "target_entry"):
+            return
+        if self.pulling():
+            self._hint_set(self.folder_entry, self.folder,
+                           f"empty = scopepull's archive, {self.scopepull[1]}   (or a folder to pull into and stack)")
+            self._hint_set(self.target_entry, self.pull_target, "all targets")
+        else:
+            self._hint_set(self.folder_entry, self.folder, "a folder of frames, or a folder of session folders")
+            self._hint_set(self.target_entry, self.pull_target, "")
+
     # ---- the scope ----------------------------------------------------------
     def _probe_scopepull(self):
         found = probe_scopepull()
@@ -734,6 +793,8 @@ class App(tk.Tk):
         self._pull_changed(save=False)
 
     def _pull_changed(self, save=True):
+        if getattr(self, "_hinting", False):
+            return
         if self.pull_var.get() and self.scopepull[0] is None:
             # the box was ticked but there is nothing to tick it for. say so, once, out loud.
             self.pull_var.set(False)
@@ -743,11 +804,12 @@ class App(tk.Tk):
             return
         on = bool(self.pull_var.get()) and self.scopepull[0] is not None
         self.settings["pull"] = bool(self.pull_var.get())
-        self.settings["pull_target"] = self.pull_target.get().strip()
+        self.settings["pull_target"] = self._real(self.target_entry, self.pull_target)
         if save:
             save_settings(self.settings)
         if not self.running():
             self.button.set_label("PULL+STACK" if on else "STACK")
+        self._refresh_hints()
         self._describe()
 
     def pulling(self):
@@ -762,6 +824,7 @@ class App(tk.Tk):
             self.say("busy. Install it after the stack.\n", "bad"); return
         self.install_btn.config(state="disabled")
         self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
+        self._cr_pending = False
         self.say("installing scopepull. This needs a Python 3.11 or newer on this machine -- looking.\n", "owl")
         threading.Thread(target=self._install_scopepull, daemon=True).start()
 
@@ -795,12 +858,11 @@ class App(tk.Tk):
             env = dict(os.environ, PYTHONUNBUFFERED="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
             if not sys.platform.startswith("win"):
                 env["PIP_BREAK_SYSTEM_PACKAGES"] = "1"      # Debian/Ubuntu's "externally managed" refusal
-            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                 creationflags=NO_WINDOW, errors="replace", env=env)
+            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 bufsize=0, creationflags=NO_WINDOW, env=env)
         except OSError as e:
             self.q.put(("line", f"couldn't run {cmd[0]}: {e}\n")); return 1
-        for line in p.stdout:
-            self.q.put(("line", "  " + line))
+        self._relay(p.stdout, prefix="  ")
         return p.wait()
 
     def _install_done(self, rc):
@@ -865,10 +927,12 @@ class App(tk.Tk):
             self.folder.set(d)
 
     def _describe(self):
-        f = self.folder.get().strip().strip('"')
+        if getattr(self, "_hinting", False):
+            return
+        f = self._real(self.folder_entry, self.folder)
         if getattr(self, "scopepull", (None, None, None))[0] is not None and self.pulling():
             where = f or self.scopepull[1]
-            tgt = self.pull_target.get().strip()
+            tgt = self._real(self.target_entry, self.pull_target)
             what = f"new {tgt!r} observations" if tgt else "everything new"
             self.mode_lbl.config(text=f"pull {what} off the Odyssey into {where}, then stack the archive "
                                       f"(targets already stacked are skipped)")
@@ -890,22 +954,53 @@ class App(tk.Tk):
             self.mode_lbl.config(text="no images in there.")
 
     def say(self, text, tag=None):
+        """Append to the log the way a terminal would: `\n` ends the line, `\r`
+        means the next text overwrites the current line. That's how starstack's
+        "combining rows 400/1094" and scopepull's "building 187/364 frames"
+        update in place instead of scrolling the window off the bottom."""
+        body = text.rstrip("\r\n")
+        term = text[len(body):]
         at_bottom = self.log.yview()[1] >= 0.999
         self.log.configure(state="normal")
-        if text.startswith("\r"):
-            # progress line: replace the last line instead of appending
-            self.log.delete("end-2l", "end-1c")
-            self.log.insert("end", "\n" + text[1:].rstrip("\n"), tag)
-        else:
-            self.log.insert("end", text, tag)
+        if body:
+            if getattr(self, "_cr_pending", False):
+                self.log.delete("end-1c linestart", "end-1c")     # overwrite the current line
+            self.log.insert("end-1c", body, tag)
+            self._cr_pending = False
+        if "\n" in term:
+            self.log.insert("end-1c", "\n")
+            self._cr_pending = False
+        elif "\r" in term:
+            self._cr_pending = True
         if at_bottom:                      # follow the log unless the reader scrolled up
             self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _relay(self, stream, prefix=""):
+        """Read a child's stdout in bytes (text mode would turn every `\r` into
+        `\n` and defeat say()), one segment per `\n` or `\r`, onto the queue."""
+        import codecs
+        dec = codecs.getincrementaldecoder("utf-8")("replace")
+        buf = ""
+        while True:
+            chunk = stream.read(1)
+            if not chunk:
+                break
+            ch = dec.decode(chunk)
+            if not ch:
+                continue
+            buf += ch
+            if ch in "\n\r":
+                self.q.put(("line", (prefix + buf) if buf.strip() else buf))
+                buf = ""
+        buf += dec.decode(b"", final=True)
+        if buf:
+            self.q.put(("line", prefix + buf + "\n"))
+
     def stack(self):
         if self.proc and self.proc.poll() is None:          # running: the button pauses / resumes
             self.toggle_pause(); return
-        f = self.folder.get().strip().strip('"')
+        f = self._real(self.folder_entry, self.folder)
         pull = self.pulling()
         if not pull and not os.path.isdir(f):
             self.say("pick a folder first. I can't stack a feeling.\n", "bad"); return
@@ -941,7 +1036,7 @@ class App(tk.Tk):
             cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), "-u", STARSTACK]
         if pull:
             cmd += ["--pull"]
-            tgt = self.pull_target.get().strip()
+            tgt = self._real(self.target_entry, self.pull_target)
             if tgt:
                 cmd += ["--pull-target", tgt]
             if f:
@@ -956,6 +1051,7 @@ class App(tk.Tk):
             cmd += ["--report", os.path.join(self.out_dir, "frames.csv")] if self.preview_path else ["--report", "x"]
 
         self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
+        self._cr_pending = False
         self.preview_lbl.config(image="", text="working…")
         self.paused = False
         self.button.set_label("PAUSE"); self.stop_btn.config(state="normal"); self.open_btn.config(state="disabled")
@@ -967,31 +1063,17 @@ class App(tk.Tk):
     def _run(self, cmd):
         try:
             flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
-            env = dict(os.environ, PYTHONUNBUFFERED="1")
+            env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
             exe = self.scopepull[2] if self.pulling() else None
             if exe:
                 # starstack.py finds scopepull with shutil.which(); make sure it can, even
                 # when we found it in a pipx/Scripts folder that isn't on this PATH
                 env["PATH"] = os.path.dirname(exe) + os.pathsep + env.get("PATH", "")
-            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         text=True, bufsize=1, creationflags=flags, errors="replace", env=env)
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT, bufsize=0, creationflags=flags, env=env)
         except Exception as e:
             self.q.put(("line", f"couldn't start starstack: {e}\n")); self.q.put(("done", 1)); return
-        buf = ""
-        while True:
-            ch = self.proc.stdout.read(1)
-            if not ch:
-                break
-            buf += ch
-            if ch in "\n\r":
-                if ch == "\r":
-                    # progress; emit as a replace-last-line message
-                    self.q.put(("line", "\r" + buf.rstrip("\r")))
-                else:
-                    self.q.put(("line", buf))
-                buf = ""
-        if buf:
-            self.q.put(("line", buf))
+        self._relay(self.proc.stdout)
         self.q.put(("done", self.proc.wait()))
 
     def _pump(self):
