@@ -306,13 +306,73 @@ def summarize(s):
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
 
 
-def probe_scopepull():
-    """(version, archive_root) if scopepull is on PATH, else (None, None).
-    Runs two quick commands; call it off the UI thread."""
+def find_scopepull():
+    """Path to the scopepull command, or None. PATH first; then the places
+    pipx, uv and Python's own Scripts folder put console scripts -- because
+    on Windows a double-clicked exe inherits Explorer's PATH from sign-in
+    time, which doesn't know about a `pipx ensurepath` run this afternoon."""
+    import glob
     import shutil
     exe = shutil.which("scopepull")
+    if exe:
+        return exe
+    home = os.path.expanduser("~")
+    names = ("scopepull.exe", "scopepull") if sys.platform.startswith("win") else ("scopepull",)
+    candidates = [os.path.join(home, ".local", "bin"),                                   # pipx / uv default
+                  os.path.join(os.environ.get("PIPX_BIN_DIR", ""), ""),
+                  os.path.join(os.environ.get("LOCALAPPDATA", ""), "pipx", "venvs", "scopepull", "Scripts"),
+                  os.path.join(home, ".local", "pipx", "venvs", "scopepull", "bin"),
+                  os.path.join(home, "pipx", "venvs", "scopepull", "Scripts"),
+                  os.path.join(os.environ.get("APPDATA", ""), "Python", "Python31*", "Scripts"),
+                  os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python", "Python31*", "Scripts"),
+                  os.path.join(home, ".local", "share", "uv", "tools", "scopepull", "Scripts"),
+                  os.path.join(home, ".local", "share", "uv", "tools", "scopepull", "bin")]
+    for d in candidates:
+        if not d.strip(os.sep):
+            continue
+        for name in names:
+            for hit in sorted(glob.glob(os.path.join(d, name)), reverse=True):
+                if os.path.isfile(hit) and os.access(hit, os.X_OK):
+                    return hit
+    return None
+
+
+def find_system_python(min_version=(3, 11)):
+    """A real CPython >= 3.11 on this machine (not the one frozen inside the
+    exe -- that has no pip). Returns the command as a list, or None."""
+    import glob
+    import shutil
+    cands = []
+    if sys.platform.startswith("win"):
+        py = shutil.which("py")
+        if py:
+            cands += [[py, "-3.13"], [py, "-3.12"], [py, "-3.11"], [py, "-3"]]
+        for pat in (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python", "Python31[1-9]*", "python.exe"),
+                    os.path.join(os.environ.get("ProgramFiles", ""), "Python31[1-9]*", "python.exe")):
+            cands += [[p] for p in sorted(glob.glob(pat), reverse=True)]
+    for name in ("python3", "python"):
+        p = shutil.which(name)
+        if p and "WindowsApps" not in p:          # the Store stub opens a shop window, not Python
+            cands.append([p])
+    if not FROZEN:
+        cands.append([sys.executable])
+    for cmd in cands:
+        try:
+            out = subprocess.run(cmd + ["-c", "import sys;print(sys.version_info[0],sys.version_info[1])"],
+                                 capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW).stdout.split()
+            if len(out) == 2 and (int(out[0]), int(out[1])) >= min_version:
+                return cmd
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+    return None
+
+
+def probe_scopepull():
+    """(version, archive_root) if scopepull can be found, else (None, None).
+    Runs two quick commands; call it off the UI thread."""
+    exe = find_scopepull()
     if not exe:
-        return None, None
+        return None, None, None
     version, root = "?", None
     try:
         out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20,
@@ -329,7 +389,7 @@ def probe_scopepull():
                 break
     except (OSError, subprocess.SubprocessError):
         pass
-    return version, root or os.path.join(os.path.expanduser("~"), "Astro", "odyssey")
+    return version, root or os.path.join(os.path.expanduser("~"), "Astro", "odyssey"), exe
 
 
 class OptionsDialog(tk.Toplevel):
@@ -539,7 +599,10 @@ class App(tk.Tk):
         tk.Label(shint, text="", bg=NAVY, font=SANS, width=7).pack(side="left", padx=(0, 8))   # under "Odyssey"
         self.scope_lbl = tk.Label(shint, text="looking for scopepull…", fg=MUTE, bg=NAVY, font=(SANS[0], 9), anchor="w")
         self.scope_lbl.pack(side="left", fill="x")
-        self.scopepull = (None, None)
+        self.install_btn = tk.Button(shint, text="Install scopepull…", command=self.install_scopepull,
+                                     bg=NAVY2, fg=CREAM, activebackground="#22304a", activeforeground=CREAM,
+                                     relief="flat", padx=8, font=(SANS[0], 9))   # shown only when it's missing
+        self.scopepull = (None, None, None)          # (version, archive root, exe path)
         threading.Thread(target=self._probe_scopepull, daemon=True).start()
 
         orow = tk.Frame(self, bg=NAVY); orow.pack(fill="x", padx=18, pady=(0, 8))
@@ -653,20 +716,31 @@ class App(tk.Tk):
         found = probe_scopepull()
         self.q.put(("scopepull", found))
 
+    NO_SCOPEPULL = "needs scopepull, the Unistellar Odyssey Pro puller (Python 3.11+). The button installs it."
+
     def _scopepull_found(self, found):
         self.scopepull = found
-        version, root = found
+        version, root, exe = found
+        self.pull_chk.config(state="normal")
         if version is None:
-            self.scope_lbl.config(text="needs scopepull, the Unistellar Odyssey Pro puller:  pipx install scopepull  (Python 3.11+)")
-            self.pull_chk.config(state="disabled")
+            self.scope_lbl.config(text=self.NO_SCOPEPULL)
+            self.install_btn.pack(side="left", padx=(10, 0))
             if self.pull_var.get():
                 self.pull_var.set(False)
         else:
-            self.scope_lbl.config(text=f"scopepull {version} (Unistellar Odyssey Pro)  ·  archive: {root}")
-            self.pull_chk.config(state="normal")
+            self.install_btn.pack_forget()
+            where = "" if os.path.dirname(exe) in os.environ.get("PATH", "").split(os.pathsep) else f"  ·  found at {exe}"
+            self.scope_lbl.config(text=f"scopepull {version} (Unistellar Odyssey Pro)  ·  archive: {root}{where}")
         self._pull_changed(save=False)
 
     def _pull_changed(self, save=True):
+        if self.pull_var.get() and self.scopepull[0] is None:
+            # the box was ticked but there is nothing to tick it for. say so, once, out loud.
+            self.pull_var.set(False)
+            if self.scopepull[2] is None and self.scope_lbl.cget("text") != "looking for scopepull…":
+                self.say("can't pull: scopepull isn't installed on this machine. The 'Install scopepull…' "
+                         "button next to that line does it. The Folder row still works for frames you already have.\n", "bad")
+            return
         on = bool(self.pull_var.get()) and self.scopepull[0] is not None
         self.settings["pull"] = bool(self.pull_var.get())
         self.settings["pull_target"] = self.pull_target.get().strip()
@@ -679,6 +753,65 @@ class App(tk.Tk):
     def pulling(self):
         """Is the next press a pull-then-stack?"""
         return bool(self.pull_var.get()) and self.scopepull[0] is not None
+
+    # ---- installing scopepull -----------------------------------------------
+    def install_scopepull(self):
+        """One click: pip-install scopepull with a Python on this machine, then
+        look again. No Python? Ask winget for one. No winget? Open python.org."""
+        if self.running():
+            self.say("busy. Install it after the stack.\n", "bad"); return
+        self.install_btn.config(state="disabled")
+        self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
+        self.say("installing scopepull. This needs a Python 3.11 or newer on this machine -- looking.\n", "owl")
+        threading.Thread(target=self._install_scopepull, daemon=True).start()
+
+    def _install_scopepull(self):
+        py = find_system_python()
+        if py is None and sys.platform.startswith("win"):
+            import shutil
+            winget = shutil.which("winget")
+            if winget:
+                self.q.put(("line", "no Python 3.11+ here. Asking winget to install Python 3.12 -- a minute or two.\n"))
+                rc = self._stream([winget, "install", "--id", "Python.Python.3.12", "-e", "--silent",
+                                   "--accept-package-agreements", "--accept-source-agreements"])
+                if rc == 0:
+                    py = find_system_python()
+        if py is None:
+            self.q.put(("line", "no Python 3.11+ on this machine and no way to fetch one. Get it from python.org "
+                                "(tick 'Add python.exe to PATH'), then press Install again.\n"))
+            try:
+                import webbrowser
+                webbrowser.open("https://www.python.org/downloads/windows/")
+            except Exception:
+                pass
+            self.q.put(("install_done", 1)); return
+        self.q.put(("line", f"using {' '.join(py)}\n"))
+        rc = self._stream(py + ["-m", "pip", "install", "--user", "--upgrade", "scopepull"])
+        self.q.put(("install_done", rc))
+
+    def _stream(self, cmd):
+        """Run a helper command, its output into the log; return its exit code."""
+        try:
+            env = dict(os.environ, PYTHONUNBUFFERED="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
+            if not sys.platform.startswith("win"):
+                env["PIP_BREAK_SYSTEM_PACKAGES"] = "1"      # Debian/Ubuntu's "externally managed" refusal
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                 creationflags=NO_WINDOW, errors="replace", env=env)
+        except OSError as e:
+            self.q.put(("line", f"couldn't run {cmd[0]}: {e}\n")); return 1
+        for line in p.stdout:
+            self.q.put(("line", "  " + line))
+        return p.wait()
+
+    def _install_done(self, rc):
+        self.install_btn.config(state="normal")
+        if rc == 0:
+            self.say("installed. Looking for it again.\n", "owl")
+            self.scope_lbl.config(text="looking for scopepull…")
+            threading.Thread(target=self._probe_scopepull, daemon=True).start()
+        else:
+            self.say(f"that didn't work (exit {rc}). The lines above say why. Fallback, in PowerShell: "
+                     f"pipx install scopepull\n", "bad")
 
     # ---- output folder ------------------------------------------------------
     PLACEHOLDER = "next to the frames  (stacked\\ for a session, stacks\\ for a night)"
@@ -733,7 +866,7 @@ class App(tk.Tk):
 
     def _describe(self):
         f = self.folder.get().strip().strip('"')
-        if getattr(self, "scopepull", (None, None))[0] is not None and self.pulling():
+        if getattr(self, "scopepull", (None, None, None))[0] is not None and self.pulling():
             where = f or self.scopepull[1]
             tgt = self.pull_target.get().strip()
             what = f"new {tgt!r} observations" if tgt else "everything new"
@@ -835,6 +968,11 @@ class App(tk.Tk):
         try:
             flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
             env = dict(os.environ, PYTHONUNBUFFERED="1")
+            exe = self.scopepull[2] if self.pulling() else None
+            if exe:
+                # starstack.py finds scopepull with shutil.which(); make sure it can, even
+                # when we found it in a pipx/Scripts folder that isn't on this PATH
+                env["PATH"] = os.path.dirname(exe) + os.pathsep + env.get("PATH", "")
             self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1, creationflags=flags, errors="replace", env=env)
         except Exception as e:
@@ -862,6 +1000,8 @@ class App(tk.Tk):
                 kind, payload = self.q.get_nowait()
                 if kind == "scopepull":
                     self._scopepull_found(payload)
+                elif kind == "install_done":
+                    self._install_done(payload)
                 elif kind == "line":
                     text = payload
                     tag = None

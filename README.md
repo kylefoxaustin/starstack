@@ -258,10 +258,14 @@ the Odyssey Pro first* and the big red button becomes
 **PULL+STACK**: on your scope's Wi-Fi, one press downloads whatever is new
 into scopepull's archive (or the folder you named, if you named one), then
 stacks the archive -- targets already stacked are skipped, so a quiet night
-costs seconds. A *target* box narrows the pull to one object. The row is
-greyed out, with the install command shown, until scopepull is found on your
-PATH. While the download runs the owl shuts his eyes; there is nothing to
-judge yet.
+costs seconds. A *target* box narrows the pull to one object. Until
+scopepull is found, the row says so and offers an **Install scopepull…**
+button: one click finds a Python 3.11+ on the machine (or asks `winget` for
+one), runs `pip install --user scopepull` with the output in the log, and
+looks again -- no terminal needed. It also finds scopepull where pipx and
+uv put it even when Windows hasn't refreshed PATH since you installed it.
+While the download runs the owl shuts his eyes; there is nothing to judge
+yet.
 
 **Options…** opens the overrides: every flag in the table below, with a plain
 name, the default marked, and a "Reset to how the owl likes it" button. The
