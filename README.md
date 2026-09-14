@@ -264,8 +264,12 @@ button: one click finds a Python 3.11+ on the machine (or asks `winget` for
 one), runs `pip install --user scopepull` with the output in the log, and
 looks again -- no terminal needed. It also finds scopepull where pipx and
 uv put it even when Windows hasn't refreshed PATH since you installed it.
-While the download runs the owl shuts his eyes; there is nothing to judge
-yet.
+At startup the window also asks PyPI, once, whether a newer scopepull
+exists and offers **Update scopepull…** if so, and asks GitHub whether a
+newer starstack exists and mentions it in the log. One small request each,
+nothing sent, three-second timeout, silent when there's no internet (which,
+on the scope's Wi-Fi, there isn't). While the download runs the owl shuts
+his eyes; there is nothing to judge yet.
 
 **Options…** opens the overrides: every flag in the table below, with a plain
 name, the default marked, and a "Reset to how the owl likes it" button. The

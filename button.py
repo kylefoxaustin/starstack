@@ -367,6 +367,55 @@ def find_system_python(min_version=(3, 11)):
     return None
 
 
+def _vtuple(v):
+    """'0.2.10' -> (0, 2, 10); anything odd -> () so it never wins a comparison."""
+    import re
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)", str(v or ""))
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def _fetch_json(url, timeout=3.0):
+    """One small GET, no data sent, quiet on any failure (the scope's Wi-Fi has
+    no internet, and that's fine)."""
+    import json
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "starstack-button", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def latest_scopepull():
+    """Newest scopepull version on PyPI, or None if we can't ask."""
+    d = _fetch_json("https://pypi.org/pypi/scopepull/json")
+    try:
+        return d["info"]["version"]
+    except (TypeError, KeyError):
+        return None
+
+
+def latest_starstack():
+    """Newest starstack release tag on GitHub, or None."""
+    d = _fetch_json("https://api.github.com/repos/kylefoxaustin/starstack/releases/latest")
+    try:
+        return d["tag_name"].lstrip("v")
+    except (TypeError, KeyError, AttributeError):
+        return None
+
+
+def starstack_version():
+    """__version__ out of starstack.py without importing numpy and friends."""
+    import re
+    try:
+        with open(STARSTACK, encoding="utf-8") as fh:
+            m = re.search(r'^__version__\s*=\s*"([^"]+)"', fh.read(), re.M)
+        return m.group(1) if m else "?"
+    except OSError:
+        return "?"
+
+
 def probe_scopepull():
     """(version, archive_root) if scopepull can be found, else (None, None).
     Runs two quick commands; call it off the UI thread."""
@@ -607,6 +656,7 @@ class App(tk.Tk):
                                      relief="flat", padx=8, font=(SANS[0], 9))   # shown only when it's missing
         self.scopepull = (None, None, None)          # (version, archive root, exe path)
         threading.Thread(target=self._probe_scopepull, daemon=True).start()
+        threading.Thread(target=self._check_self, daemon=True).start()
 
         orow = tk.Frame(self, bg=NAVY); orow.pack(fill="x", padx=18, pady=(0, 8))
         tk.Label(orow, text="Output", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
@@ -774,6 +824,13 @@ class App(tk.Tk):
     def _probe_scopepull(self):
         found = probe_scopepull()
         self.q.put(("scopepull", found))
+        if found[0] is not None:                       # installed: is it current?
+            self.q.put(("scopepull_latest", latest_scopepull()))
+
+    def _check_self(self):
+        mine, latest = starstack_version(), latest_starstack()
+        if latest and _vtuple(latest) > _vtuple(mine):
+            self.q.put(("starstack_latest", (mine, latest)))
 
     NO_SCOPEPULL = "needs scopepull, the Unistellar Odyssey Pro puller (Python 3.11+). The button installs it."
 
@@ -788,9 +845,26 @@ class App(tk.Tk):
                 self.pull_var.set(False)
         else:
             self.install_btn.pack_forget()
+            self.install_btn.config(text="Install scopepull…")
             where = "" if os.path.dirname(exe) in os.environ.get("PATH", "").split(os.pathsep) else f"  ·  found at {exe}"
             self.scope_lbl.config(text=f"scopepull {version} (Unistellar Odyssey Pro)  ·  archive: {root}{where}")
         self._pull_changed(save=False)
+
+    def _scopepull_latest(self, latest):
+        """PyPI answered. If it's newer than what's installed, say so and turn
+        the install button into an update button."""
+        mine = self.scopepull[0]
+        if not latest or mine is None or _vtuple(latest) <= _vtuple(mine):
+            return
+        self.scope_lbl.config(text=self.scope_lbl.cget("text").replace(
+            f"scopepull {mine} ", f"scopepull {mine} -- {latest} is out -- ", 1))
+        self.install_btn.config(text=f"Update scopepull to {latest}…")
+        self.install_btn.pack(side="left", padx=(10, 0))
+
+    def _starstack_latest(self, pair):
+        mine, latest = pair
+        self.say(f"psst: starstack {latest} is out (this is {mine}). "
+                 f"github.com/kylefoxaustin/starstack/releases\n", "owl")
 
     def _pull_changed(self, save=True):
         if getattr(self, "_hinting", False):
@@ -825,7 +899,8 @@ class App(tk.Tk):
         self.install_btn.config(state="disabled")
         self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
         self._cr_pending = False
-        self.say("installing scopepull. This needs a Python 3.11 or newer on this machine -- looking.\n", "owl")
+        verb = "updating" if self.scopepull[0] else "installing"
+        self.say(f"{verb} scopepull. This needs a Python 3.11 or newer on this machine -- looking.\n", "owl")
         threading.Thread(target=self._install_scopepull, daemon=True).start()
 
     def _install_scopepull(self):
@@ -1082,6 +1157,10 @@ class App(tk.Tk):
                 kind, payload = self.q.get_nowait()
                 if kind == "scopepull":
                     self._scopepull_found(payload)
+                elif kind == "scopepull_latest":
+                    self._scopepull_latest(payload)
+                elif kind == "starstack_latest":
+                    self._starstack_latest(payload)
                 elif kind == "install_done":
                     self._install_done(payload)
                 elif kind == "line":
