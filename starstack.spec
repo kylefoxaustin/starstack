@@ -37,6 +37,9 @@ exe = EXE(
     pyz, a.scripts, a.binaries, a.zipfiles, a.datas, [],
     name="starstack",
     icon=os.path.join(here, "docs", "starstack.ico"),
+    # Properties > Details: product name, version, author. make_version_info.py
+    # writes this from __version__; without it the exe looks throwaway to Defender.
+    version=os.path.join(here, "version_info.txt") if os.path.exists(os.path.join(here, "version_info.txt")) else None,
     console=False,                 # no black console window behind the button
     debug=False,
     strip=False,

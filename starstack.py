@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.5"
+__version__ = "0.2.7"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 

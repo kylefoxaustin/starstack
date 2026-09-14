@@ -2,6 +2,16 @@ name: release
 
 # Push a tag like v0.2.0 and this builds starstack.exe on Windows and
 # attaches it to a GitHub Release. No installer; one file with the owl on it.
+#
+# Windows Defender and PyInstaller: a one-file, windowed PyInstaller exe is
+# launched by a small "bootloader" program that every PyInstaller app on the
+# planet shares, byte for byte. When any one of those apps is malware,
+# Defender's heuristics (Wacatac / Wacapew / anything "!ml") flag them all,
+# including ours (v0.2.5, v0.2.6). So this workflow compiles that bootloader
+# itself, on this runner, from PyInstaller's source -- a hash nobody has ever
+# shipped -- and refuses to build if it somehow ended up with the stock one.
+# (pip's --no-binary does NOT do this: PyInstaller's sdist ships prebuilt
+# bootloaders. You have to run its waf build.)
 on:
   push:
     tags: ["v*"]
@@ -9,20 +19,52 @@ on:
 permissions:
   contents: write
 
+env:
+  PYINSTALLER_VERSION: "6.22.3"
+
 jobs:
   windows-exe:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt pyinstaller
+      - run: pip install -r requirements.txt
+
+      # MSVC on PATH for waf
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build PyInstaller with a bootloader compiled here
+        shell: pwsh
+        run: |
+          git clone --quiet --depth 1 --branch "v$env:PYINSTALLER_VERSION" https://github.com/pyinstaller/pyinstaller.git pyi-src
+          # throw away the shipped bootloaders so a failed compile can't fall back to them
+          Remove-Item -Recurse -Force pyi-src\PyInstaller\bootloader\Windows-64bit-intel
+          Push-Location pyi-src\bootloader
+          python .\waf all
+          Pop-Location
+          pip install --no-cache-dir .\pyi-src
+
+      - name: Prove the bootloader is ours
+        shell: pwsh
+        run: |
+          # sha256 of runw.exe inside the official 6.22.3 win_amd64 wheel
+          $stock = "2291f269c3a3804f"
+          $p = python -c "import PyInstaller,pathlib; print(pathlib.Path(PyInstaller.__file__).parent/'bootloader'/'Windows-64bit-intel'/'runw.exe')"
+          $h = (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()
+          Write-Host "bootloader runw.exe sha256: $h"
+          if ($h.StartsWith($stock)) { throw "bootloader is the stock wheel one -- the compile did not take" }
+
+      - run: python make_version_info.py
       - run: pyinstaller --noconfirm --clean starstack.spec
       - run: |
           $v = "${{ github.ref_name }}"
           Copy-Item dist\starstack.exe "dist\starstack-$v-windows.exe"
+          Get-FileHash "dist\starstack-$v-windows.exe" -Algorithm SHA256 | Format-List
         shell: pwsh
       - uses: softprops/action-gh-release@v2
         with:

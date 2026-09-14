@@ -20,3 +20,4 @@ dist/
 /*.png
 uv.lock
 .venv/
+version_info.txt

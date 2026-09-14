@@ -2,11 +2,14 @@
 rem Builds a single starstack.exe with the owl icon. Needs Python; installs PyInstaller if missing.
 cd /d "%~dp0"
 pip install -r requirements.txt
-rem PyInstaller from source: compiles its own bootloader so Windows Defender doesn't
-rem mistake the exe for every other PyInstaller app (needs the Visual Studio Build
-rem Tools C++ workload; if this step fails, plain "pip install pyinstaller" works but
-rem the exe may get a false-positive from Defender until Microsoft clears it).
-pip install --no-binary pyinstaller --no-cache-dir pyinstaller
+rem A PyInstaller exe launched by the stock bootloader gets flagged by Windows
+rem Defender whenever any other PyInstaller app is caught being malware. The
+rem GitHub release build compiles its own bootloader (see .github/workflows/
+rem release.yml -- it needs the MSVC toolchain, which most PCs don't have).
+rem This local build uses the stock one; if Defender objects, use a release
+rem exe or: Windows Security > Protection history > Allow.
+pip install pyinstaller
+python make_version_info.py
 pyinstaller --noconfirm --clean starstack.spec
 echo.
 echo Done: dist\starstack.exe  (double-click it, or drag a folder onto it)
