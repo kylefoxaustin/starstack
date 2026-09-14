@@ -449,6 +449,16 @@ asks once per download. If you'd rather not take a stranger's word for it,
 the source is right here and `build_exe.bat` makes the same file on your
 own machine.
 
+Windows Defender may go further and call a release a virus (`Wacatac`,
+`Wacapew`, anything ending in `!ml`). That's the heuristic reacting to how
+PyInstaller packs a program -- the same launcher bytes as thousands of other
+Python apps, so when one of *those* is bad, all of them get flagged for a
+while. Nothing in starstack phones home, installs, or touches anything
+outside the folder you point it at. Releases are built with a launcher
+compiled fresh on the build machine to avoid exactly this; if it still
+happens, Windows Security -> Protection history -> Allow, or build it
+yourself.
+
 To build that exe yourself: `build_exe.bat` (needs Python; it installs
 PyInstaller and produces `dist\starstack.exe`). Releases are built by
 GitHub Actions on a Windows runner whenever a `v*` tag is pushed.
