@@ -417,6 +417,27 @@ def test_relay_forwards_progress_lines_and_logs_finished_ones(tmp_path, capsys):
     assert "building 3/10" not in logged                                         # \r spam stays off disk
 
 
+def test_pull_output_survives_a_cp1252_stdout(tmp_path):
+    """The exe's stdout is cp1252 on Windows; scopepull prints a `\u2192`.
+    0.2.9 died with UnicodeEncodeError. Force the worst case (a cp1252 pipe)
+    and make sure the arrow is relayed, or replaced, but never fatal."""
+    fake = tmp_path / "bin"; fake.mkdir()
+    script = fake / "scopepull"
+    script.write_text("#!/bin/sh\ncase \"$1\" in\n"
+                      "  status) echo 'Archive root: /nowhere';;\n"
+                      "  pull) printf 'scope answered with the web app instead of the API \\342\\206\\222 enable Direct Data Download\\n'; exit 4;;\n"
+                      "esac\n")
+    script.chmod(0o755)
+    env = dict(os.environ, PATH=f"{fake}{os.pathsep}{os.environ['PATH']}", PYTHONIOENCODING="cp1252")
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "starstack.py"), "--pull", str(tmp_path)],
+                       capture_output=True, env=env)
+    out = r.stdout.decode("utf-8", "replace")
+    assert "Traceback" not in out + r.stderr.decode("utf-8", "replace")
+    assert "enable Direct Data Download" in out            # the relayed line made it through
+    assert "Direct Data Download is off" in out            # and starstack's own verdict on exit 4
+    assert r.returncode == 3
+
+
 def test_whole_night_skips_sessions_already_stacked(tmp_path):
     """Run a night twice: the second run stacks nothing, says so, and exits 0.
     --restack does it again. A session with newer frames is re-done."""

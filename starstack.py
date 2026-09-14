@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.9"
+__version__ = "0.2.10"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -679,7 +679,22 @@ def scopepull_archive_root(exe: str) -> str:
     return default
 
 
+def utf8_stdio():
+    """Our output is UTF-8 with replacement, whatever the launcher thinks.
+    Inside the Windows exe, stdout is a cp1252 pipe by default, and the first
+    `\u2192` in a relayed scopepull line (`... API -> enable Direct Data
+    Download`) killed 0.2.9 with UnicodeEncodeError. PYTHONIOENCODING can't
+    fix that -- a PyInstaller exe ignores Python's environment variables --
+    so it's done here, in code, on every start."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None):
+    utf8_stdio()
     p = argparse.ArgumentParser(
         prog="starstack",
         description="Point it at a folder of frames. Push the button. Get one stacked image out. "
