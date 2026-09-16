@@ -143,6 +143,72 @@ class Button(tk.Canvas):
 # ---------------------------------------------------------------------------
 # pausing: freeze the stacker and its worker processes where they stand
 # ---------------------------------------------------------------------------
+def make_job():
+    """Windows only: a job object marked KILL_ON_JOB_CLOSE. Every process we
+    put in it -- the stacker, its workers, the scopepull under it -- is ended
+    by Windows the moment the last handle to the job closes, and our handle
+    closes when the owl dies, however it dies: X button, Task Manager, crash.
+    That is the guarantee the X-button handler alone can't give (Task Manager
+    runs none of our code). Returns the handle, or None off Windows."""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        k32.SetInformationJobObject.restype = wintypes.BOOL
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in ("ReadOperationCount", "WriteOperationCount",
+                                                        "OtherOperationCount", "ReadTransferCount",
+                                                        "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = ExtendedLimits()
+        info.BasicLimitInformation.LimitFlags = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):   # 9 = ExtendedLimitInformation
+            k32.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def join_job(job, proc):
+    """Put a just-started subprocess (and, by inheritance, everything it will
+    start) into the job. Quietly does nothing off Windows or if the job
+    couldn't be made."""
+    if job is None:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        return bool(k32.AssignProcessToJobObject(job, int(proc._handle)))
+    except Exception:
+        return False
+
+
 def _tree(proc):
     """The subprocess and its workers, via psutil when available."""
     try:
@@ -570,7 +636,9 @@ class App(tk.Tk):
         self.preview_path = None
         self.out_dir = None
         self.settings = load_settings()
+        self.job = make_job()                    # dies with us; takes every child along
         self._build()
+        self.protocol("WM_DELETE_WINDOW", self.quit_app)
         self.after(80, self._pump)
 
     def _set_icon(self):
@@ -944,6 +1012,7 @@ class App(tk.Tk):
                 env["PIP_BREAK_SYSTEM_PACKAGES"] = "1"      # Debian/Ubuntu's "externally managed" refusal
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  bufsize=0, creationflags=NO_WINDOW, env=env)
+            join_job(self.job, p)
         except OSError as e:
             self.q.put(("line", f"couldn't run {cmd[0]}: {e}\n")); return 1
         self._relay(p.stdout, prefix="  ")
@@ -1156,6 +1225,7 @@ class App(tk.Tk):
                 env["PATH"] = os.path.dirname(exe) + os.pathsep + env.get("PATH", "")
             self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT, bufsize=0, creationflags=flags, env=env)
+            join_job(self.job, self.proc)
         except Exception as e:
             self.q.put(("line", f"couldn't start starstack: {e}\n")); self.q.put(("done", 1)); return
         self._relay(self.proc.stdout)
@@ -1312,6 +1382,21 @@ class App(tk.Tk):
             kill_tree(self.proc)
             self.paused = False
             self.say("\nstopped. fine.\n", "bad")
+
+    def quit_app(self):
+        """Closing the window ends the run and everything it started. Before
+        0.2.13, closing left the stacker -- and a scopepull download under it
+        -- running unseen; the orphan kept its .zip.partial open and every
+        later pull of that observation died at the rename with "being used by
+        another process". The job object (make_job) covers the case this
+        handler can't: starstack.exe killed from Task Manager."""
+        if self.running():
+            try:
+                kill_tree(self.proc)
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
+        self.destroy()
 
 
 def main():
