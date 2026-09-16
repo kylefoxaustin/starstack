@@ -649,11 +649,13 @@ class App(tk.Tk):
         self._hint_bind(self.target_entry, self.pull_target)
         shint = tk.Frame(self, bg=NAVY); shint.pack(fill="x", padx=18, pady=(0, 6))
         tk.Label(shint, text="", bg=NAVY, font=SANS, width=7).pack(side="left", padx=(0, 8))   # under "Odyssey"
-        self.scope_lbl = tk.Label(shint, text="looking for scopepull…", fg=MUTE, bg=NAVY, font=(SANS[0], 9), anchor="w")
-        self.scope_lbl.pack(side="left", fill="x")
+        # the button is packed on the right, FIRST, so a long hint can never push it
+        # off the edge of the window (0.2.11: it was only visible full-screen)
         self.install_btn = tk.Button(shint, text="Install scopepull…", command=self.install_scopepull,
                                      bg=NAVY2, fg=CREAM, activebackground="#22304a", activeforeground=CREAM,
-                                     relief="flat", padx=8, font=(SANS[0], 9))   # shown only when it's missing
+                                     relief="flat", padx=8, font=(SANS[0], 9))   # shown only when needed
+        self.scope_lbl = tk.Label(shint, text="looking for scopepull…", fg=MUTE, bg=NAVY, font=(SANS[0], 9), anchor="w")
+        self.scope_lbl.pack(side="left", fill="x", expand=True)
         self.scopepull = (None, None, None)          # (version, archive root, exe path)
         threading.Thread(target=self._probe_scopepull, daemon=True).start()
         threading.Thread(target=self._check_self, daemon=True).start()
@@ -840,14 +842,21 @@ class App(tk.Tk):
         self.pull_chk.config(state="normal")
         if version is None:
             self.scope_lbl.config(text=self.NO_SCOPEPULL)
-            self.install_btn.pack(side="left", padx=(10, 0))
+            self.install_btn.pack(side="right", padx=(10, 0))
             if self.pull_var.get():
                 self.pull_var.set(False)
         else:
             self.install_btn.pack_forget()
             self.install_btn.config(text="Install scopepull…")
-            where = "" if os.path.dirname(exe) in os.environ.get("PATH", "").split(os.pathsep) else f"  ·  found at {exe}"
+            d = os.path.dirname(exe)
+            where = "" if d in os.environ.get("PATH", "").split(os.pathsep) else \
+                f"  ·  found off PATH in …\\{os.path.basename(os.path.dirname(d))}\\{os.path.basename(d)}"
             self.scope_lbl.config(text=f"scopepull {version} (Unistellar Odyssey Pro)  ·  archive: {root}{where}")
+            if where and getattr(self, "_explain_path", False):
+                self._explain_path = False
+                self.say(f"scopepull {version} lives in {d}. That folder isn't on your PATH; the owl doesn't "
+                         f"need it to be. If you also want to type `scopepull` in PowerShell, add that folder "
+                         f"to PATH (Settings > System > About > Advanced system settings > Environment Variables).\n", "owl")
         self._pull_changed(save=False)
 
     def _scopepull_latest(self, latest):
@@ -859,7 +868,7 @@ class App(tk.Tk):
         self.scope_lbl.config(text=self.scope_lbl.cget("text").replace(
             f"scopepull {mine} ", f"scopepull {mine} -- {latest} is out -- ", 1))
         self.install_btn.config(text=f"Update scopepull to {latest}…")
-        self.install_btn.pack(side="left", padx=(10, 0))
+        self.install_btn.pack(side="right", padx=(10, 0))
 
     def _starstack_latest(self, pair):
         mine, latest = pair
@@ -924,7 +933,7 @@ class App(tk.Tk):
                 pass
             self.q.put(("install_done", 1)); return
         self.q.put(("line", f"using {' '.join(py)}\n"))
-        rc = self._stream(py + ["-m", "pip", "install", "--user", "--upgrade", "scopepull"])
+        rc = self._stream(py + ["-m", "pip", "install", "--user", "--upgrade", "--no-warn-script-location", "scopepull"])
         self.q.put(("install_done", rc))
 
     def _stream(self, cmd):
@@ -944,6 +953,7 @@ class App(tk.Tk):
         self.install_btn.config(state="normal")
         if rc == 0:
             self.say("installed. Looking for it again.\n", "owl")
+            self._explain_path = True
             self.scope_lbl.config(text="looking for scopepull…")
             threading.Thread(target=self._probe_scopepull, daemon=True).start()
         else:
