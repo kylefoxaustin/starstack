@@ -28,7 +28,10 @@ a = Analysis(
     hiddenimports=hidden,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["matplotlib", "IPython", "pytest", "tkinter.test", "astropy.tests"],
+    # NOT astropy.tests: astropy/__init__.py imports astropy.tests.runner, so
+    # excluding it makes `import astropy` fail inside the exe -- every FITS
+    # frame "unreadable", TIFFs fine, nobody the wiser (0.2.5 .. 0.2.13).
+    excludes=["matplotlib", "IPython", "pytest", "tkinter.test"],
     cipher=block_cipher,
     noarchive=False,
 )

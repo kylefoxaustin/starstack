@@ -531,7 +531,13 @@ Bayer frames with 400 hot pixels, a satellite streak, three truncated frames
   the whole archive root, each frame counted once, `reference/` untouched,
   outputs named from `observation.json` — and then the real thing: M81 and
   M82 pulled with scopepull and stacked by the button from the archive
-  folder, end to end (the before/after pairs under *Output*)
+  folder, end to end (the before/after pairs under *Output*); later six
+  observations pulled off the scope by the button itself, on a laptop that
+  had never seen any of it
+- the Windows exe, on every release build, stacking a FITS archive before it
+  is allowed to upload (`smoke_frozen.py`) — because 0.2.5 to 0.2.13 shipped
+  with astropy unable to import inside the exe, so every FITS file was
+  "unreadable" while TIFFs worked, and no test ran the frozen build on FITS
 
 ## The owl
 

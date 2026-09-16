@@ -61,6 +61,13 @@ jobs:
 
       - run: python make_version_info.py
       - run: pyinstaller --noconfirm --clean starstack.spec
+
+      # The built exe must actually stack a FITS archive before it is released.
+      # 0.2.5-0.2.13 shipped with `import astropy` broken inside the exe (every
+      # FITS "unreadable"); nothing ran the frozen build on FITS until a user did.
+      - name: Smoke-test the exe on a scopepull-shaped FITS archive
+        run: python smoke_frozen.py dist\starstack.exe
+
       - run: |
           $v = "${{ github.ref_name }}"
           Copy-Item dist\starstack.exe "dist\starstack-$v-windows.exe"

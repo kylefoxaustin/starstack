@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.13"
+__version__ = "0.2.14"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -435,7 +435,7 @@ def build_master_dark(darks: list, log) -> np.ndarray | None:
             imgs.append(read_image(f.path))
             f.status = "dark"
         except Exception as e:
-            f.status, f.note = "unreadable", str(e)[:80]
+            f.status, f.note = "unreadable", f"{type(e).__name__}: {str(e)[:160]}"
     if not imgs:
         return None
     cube = np.stack(imgs, axis=0)
@@ -1211,6 +1211,13 @@ def run(args):
             f.status, f.note = "unreadable", str(e)[:80]
     lights = [f for f in frames if f.kind == "light" and f.status == "pending"]
     if not lights:
+        # say WHY, not just that. 0.2.13 hid the reason and the reason was an
+        # import failing inside the exe, ~2200 times, in two seconds.
+        bad = [f for f in frames if f.status == "unreadable"]
+        for f in bad[:3]:
+            log(f"  {os.path.basename(f.path)}: {f.note}")
+        if len(bad) > 3:
+            log(f"  ... and {len(bad) - 3} more like that.")
         sys.exit("couldn't read a single frame. Wrong folder, or not images.")
 
     # Things that live next to the subs but are not subs: the scope's own
@@ -1463,6 +1470,7 @@ def run(args):
 
     # ---- write --------------------------------------------------------------
     log(f"writing {args.out}")
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)   # -o into a folder that isn't there yet
     ext = os.path.splitext(args.out)[1].lower()
     if args.bits == 16:
         # linear data on the 0..1 scale -> full 16-bit range; nothing is stretched
