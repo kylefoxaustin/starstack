@@ -213,6 +213,39 @@ def _scopepull_observation(d, rng, n, target):
     (d / "SHA256SUMS").write_text("")
 
 
+def test_wrong_bayer_header_is_overruled_by_the_pixels(tmp_path):
+    """FITS from scopepull's first release say BAYERPAT=GBRG (the sensor)
+    while the pixels are RGGB (the export). Stacking on the header swaps the
+    colours. The owl now measures and, when the header names the wrong
+    diagonal family, trusts the pixels -- and says so."""
+    from astropy.io import fits
+    rng = np.random.default_rng(11)
+    d = tmp_path / "old-pull"; d.mkdir()
+    for i in range(6):
+        fr = _odyssey_frame(rng, shift=(rng.integers(-5, 5), rng.integers(-5, 5)))   # greens on the anti-diagonal = RGGB
+        h = fits.PrimaryHDU(fr); h.header["BAYERPAT"] = "GBRG"; h.header["EXPTIME"] = 4.0
+        h.writeto(d / f"{i:02d}_StackInput.fits")
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "starstack.py"), str(d), "-o", str(tmp_path / "s.tif"),
+                        "-j", "2", "--no-align"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "the header says GBRG, but the pixels say" in r.stdout
+    assert "debayering as RGGB" in r.stdout
+    import tifffile
+    img = tifffile.imread(str(tmp_path / "s.tif")).astype(np.float32)
+    assert np.median(img[..., 0]) > np.median(img[..., 2]) * 1.2          # R > B: the right way round
+
+    # and a header in the RIGHT family is left alone (Seestar's GRBG is real)
+    d2 = tmp_path / "seestar"; d2.mkdir()
+    for i in range(6):
+        h = fits.PrimaryHDU(_seestar_frame(rng, shift=(rng.integers(-5, 5), rng.integers(-5, 5))))
+        h.header["BAYERPAT"] = "GRBG"
+        h.writeto(d2 / f"L{i:02d}.fit")
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "starstack.py"), str(d2), "-o", str(tmp_path / "s2.tif"),
+                        "-j", "2", "--no-align"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Pixels win" not in r.stdout and "debayering as GRBG" in r.stdout
+
+
 def test_scopepull_archive_layout(tmp_path):
     """A scopepull archive is <root>/<date>/<observation>/. Pointed at the
     root it stacks every observation of every night; each observation is

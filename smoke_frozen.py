@@ -56,7 +56,9 @@ def scopepull_observation(d, rng, n, target):
         fr = odyssey_frame(rng, shift=(rng.integers(-5, 5), rng.integers(-5, 5)))
         tifffile.imwrite(str(stem) + ".tiff", fr)
         h = fits.PrimaryHDU(fr)
-        h.header["BAYERPAT"] = "RGGB"; h.header["SENSPAT"] = "GBRG"; h.header["EXPTIME"] = 4.0
+        # the header lies, as scopepull < 0.1.1 archives do: pixels are RGGB, header says the sensor's GBRG.
+        # the exe must measure, overrule it, and still say "debayering as RGGB".
+        h.header["BAYERPAT"] = "GBRG"; h.header["SENSPAT"] = "GBRG"; h.header["EXPTIME"] = 4.0
         h.writeto(str(stem) + ".fits")
     dark = (rng.normal(2000, 30, (1094, 1452))).clip(0, 65535).astype(np.uint16)
     tifffile.imwrite(str(d / "calibration" / "20260131T000_DarkframeMean.tiff"), dark)
@@ -77,6 +79,7 @@ with tempfile.TemporaryDirectory() as td:
     r = subprocess.run([exe, "--cli", str(obs), "-o", out, "--no-log", "-j", "2", "--no-align"],
                        capture_output=True, text=True, errors="replace", timeout=600)
     print(r.stdout[-2500:])
-    ok = r.returncode == 0 and os.path.exists(out) and "debayering as RGGB" in r.stdout
+    ok = (r.returncode == 0 and os.path.exists(out) and "debayering as RGGB" in r.stdout
+          and "Pixels win" in r.stdout)
     print("FROZEN SMOKE:", "OK" if ok else f"FAILED (exit {r.returncode})")
     sys.exit(0 if ok else 1)

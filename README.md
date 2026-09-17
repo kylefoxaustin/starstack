@@ -74,11 +74,13 @@ evening. It reads what is there and gets on with it.
   stars, alignment that won't converge — it's logged, left out, and the run
   continues. `--report frames.csv` tells you exactly which and why.
 - **Debayers raw frames, TIFFs included.** FITS get the pattern from the
-  `BAYERPAT` header. TIFF/PNG have no header, so it looks at the pixels: a
-  mosaic has four 2×2 phases with different means and a matching green pair
-  on one diagonal; a mono or already-colour image doesn't. When it sees a
-  mosaic it assumes RGGB (Unistellar) and says so. Force with
-  `--debayer RGGB`; `--debayer none` for frames that are already colour.
+  `BAYERPAT` header -- but the pixels get a vote. A mosaic has four 2×2
+  phases with different means and a matching green pair on one diagonal;
+  if the header names the wrong diagonal (RGGB/BGGR vs GRBG/GBRG), the
+  header is wrong, the pixels win, and the log says so. TIFF/PNG have no
+  header, so the pixels are all it has: when it sees a mosaic it assumes
+  RGGB (Unistellar) and says so. Force with `--debayer RGGB`;
+  `--debayer none` for frames that are already colour.
 - **Judges every frame and drops the bad ones.** Each sub gets measured
   before it's warped: star count, background, noise, and a median star FWHM
   in pixels. Frames that are blurry, cloudy or starved *relative to the rest
@@ -422,7 +424,12 @@ FITS header, or the same as a JSON description tag in a TIFF.
   *sensor* is `BAYER_GBRG`; the exported pixels are RGGB (the export flips
   rows). starstack measures the pixels, so it doesn't care what the manifest
   claims. Pulled with [scopepull](https://github.com/kylefoxaustin/scopepull)
-  instead? See *scopepull archives* above -- same data, tidier folder.
+  instead? See *scopepull archives* above -- same data, tidier folder. One
+  wrinkle: archives pulled with scopepull 0.1.0 have FITS that say
+  `BAYERPAT = GBRG` (the sensor's pattern, copied from the manifest). Versions
+  of starstack before 0.2.15 believed that header and stacked those sessions
+  with the colours swapped; 0.2.15 checks the header against the pixels and
+  overrules it. If a stack from before looks wrong, `--restack` it.
 - **Seestar S50**: sub-frames are 1080×1920 16-bit FITS with `BAYERPAT =
   'GRBG'` in the header (not RGGB -- the header is what starstack reads, so
   it gets this right without being told). The scope keeps a target's results

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.14"
+__version__ = "0.2.15"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -1288,7 +1288,24 @@ def run(args):
             hdr_pat = next((f.bayer for f in usable if f.bayer), None)
             is_mono = len(usable[0].raw_shape) == 2
             if hdr_pat and is_mono:
+                # a header is a claim; the pixels are evidence. Check that the greens
+                # sit on the diagonal the header says they do. scopepull's first
+                # release wrote the SENSOR's pattern (GBRG) into FITS of exports that
+                # are RGGB as stored, and a stack debayered on that header comes out
+                # with its colours swapped. The two families (RGGB/BGGR vs GRBG/GBRG)
+                # are distinguishable from statistics; within a family they are not,
+                # so a header in the right family is trusted as-is.
                 pattern = hdr_pat
+                try:
+                    sample = read_image(usable[len(usable) // 2].path)
+                    measured = detect_bayer(sample, default=hdr_pat)
+                    if measured and measured != hdr_pat:
+                        log(f"the header says {hdr_pat}, but the pixels say the greens are on the other "
+                            f"diagonal. That's {measured}. Pixels win; headers can be wrong (this one was "
+                            f"written from the sensor's pattern, not the file's). --debayer {hdr_pat} to overrule.")
+                        pattern = measured
+                except Exception:
+                    pass
             elif is_mono:
                 # no header (TIFF/PNG) -- look at the pixels
                 try:
