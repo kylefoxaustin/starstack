@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.15"
+__version__ = "0.2.16"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -746,6 +746,17 @@ def main(argv=None):
     args = p.parse_args(argv)
     log = Logger(args.quiet, None)               # screen only; run() opens the real .log later
 
+    # PowerShell and cmd hand "~/Astro/odyssey" over verbatim (bash expands it
+    # first). Expand it ourselves, then say "no such folder" like a person
+    # would instead of dying in a dialog box.
+    for name in ("folder", "out", "scratch", "darks"):
+        v = getattr(args, name, None)
+        if isinstance(v, str) and v.startswith("~"):
+            setattr(args, name, os.path.expanduser(v))
+    if args.folder and not args.pull and not any(ch in args.folder for ch in "*?[") and not os.path.exists(args.folder):
+        log(f"no such folder: {args.folder}")
+        return 2
+
     if args.pull:
         dest = run_scopepull(args.folder, args.pull_target, log)
         if dest is None:
@@ -939,8 +950,9 @@ def find_sessions(folder: str, _deeper: bool = True):
         base = os.path.basename(d).lower()
         if base.endswith(".partial"):           # scopepull mid-download; not ours yet
             continue
-        if base == "stacks" and os.path.exists(os.path.join(d, "night.log")):
-            continue                            # our own output from an earlier run
+        if base == "stacks" and (os.path.exists(os.path.join(d, "night.log"))
+                                 or any(n.endswith("_look.png") for n in os.listdir(d))):
+            continue                            # our own output from an earlier run (--no-log leaves no night.log)
         if seestar_subs(d) and not d.lower().endswith("_sub"):
             continue                            # `M81/` (finished stacks): its subs are in M81_sub/
         if _has_images(d) or layout_dirs(d):
