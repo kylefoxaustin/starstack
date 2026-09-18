@@ -130,7 +130,9 @@ folder from a previous run is recognised and not mistaken for a session, and
 a session whose output already exists and is newer than its frames is
 skipped ("already stacked this one on Tue Sep 09 ... Skipping."), so re-running
 a night after a new target lands only stacks the new target. `--restack` if
-you've changed your mind about the old ones.
+you've changed your mind about the old ones (on the button: *Options… → Redo
+sessions that already have a stack*; it turns itself off after the run, so
+the next night doesn't cost 95 minutes of M81 again).
 
 ## Straight off the scope: `--pull` (Unistellar Odyssey Pro)
 
@@ -278,6 +280,9 @@ name, the default marked, and a "Reset to how the owl likes it" button. The
 main window stays folder / button / log / picture; when something is set
 off-default it says so in one muted line next to the button ("options: keep
 every frame, median") so nobody wonders why a stack came out different.
+One of them is a one-shot: *Redo sessions that already have a stack* re-does
+a whole night that's been stacked before (after a fix, or a change of mind)
+and unticks itself when the run ends.
 Settings stick between launches (`~/.starstack.json`).
 
 <p align="center">

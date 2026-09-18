@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.16"
+__version__ = "0.2.17"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -1048,7 +1048,7 @@ def run_batch(args, sessions):
         done_when = already_stacked(sess, a.out)
         if done_when and not getattr(args, "restack", False):
             log(f"  already stacked this one on {done_when}, and nothing in the folder has "
-                f"changed since. Skipping. --restack if you've changed your mind.")
+                f"changed since. Skipping. --restack (Options... > Redo, on the button) if you've changed your mind.")
             results.append((name, "already stacked", a.out))
             continue
         try:

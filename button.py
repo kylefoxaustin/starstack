@@ -288,6 +288,7 @@ DEFAULTS = {
     "out_dir": "",         # "" = next to the frames (stacked/ or stacks/)
     "scratch": "",         # "" = system temp; the 10+ GB cube goes here
     "pull": False,         # fetch new observations off an Odyssey Pro (scopepull) before stacking
+    "restack": False,      # redo sessions that already have a stack (one run, then off)
     "pull_target": "",     # with pull: only observations whose target matches this
 }
 LABELS = {  # what the main window says when something is off-default
@@ -306,6 +307,7 @@ LABELS = {  # what the main window says when something is off-default
     "scratch": lambda v: None if not v else f"scratch: {v}",
     "pull": lambda v: None,             # has its own row too
     "pull_target": lambda v: None,
+    "restack": lambda v: "redo already-stacked sessions" if v else None,
 }
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".starstack.json")
 
@@ -348,6 +350,8 @@ def settings_to_args(s):
         a += ["--no-darks"]
     if s["method"] != "sigma":
         a += ["--method", s["method"]]
+    if s.get("restack"):
+        a += ["--restack"]
     if abs(float(s["sigma"]) - 3.0) > 1e-9:
         a += ["--sigma", f"{float(s['sigma']):g}"]
     if s["debayer"] != "auto":
@@ -558,6 +562,9 @@ class OptionsDialog(tk.Toplevel):
         check("align", "Star-align every frame (off only if they're already registered)")
         check("normalize", "Level-match frames before combining")
         choice("debayer", "Bayer pattern", ["auto", "RGGB", "BGGR", "GRBG", "GBRG", "none"], "default: auto (the owl looks)")
+
+        section("Whole night")
+        check("restack", "Redo sessions that already have a stack (one run, then turns itself off)")
 
         section("Combine")
         choice("method", "How frames are combined", ["sigma", "mean", "median"], "default: sigma")
@@ -1303,6 +1310,9 @@ class App(tk.Tk):
 
     def _finished(self, rc):
         self.paused = False
+        if self.settings.get("restack"):        # a one-off; nobody wants 95 minutes of M81 every night
+            self.settings["restack"] = False
+            save_settings(self.settings)
         self.button.set_label("PULL+STACK" if self.pulling() else "STACK")
         self.button.set_enabled(True); self.stop_btn.config(state="disabled")
         self.open_btn.config(state="normal")
