@@ -68,12 +68,22 @@ jobs:
       - name: Smoke-test the exe on a scopepull-shaped FITS archive
         run: python smoke_frozen.py dist\starstack.exe
 
+      # The checksum goes where a person can see it: a SHA256SUMS.txt next to
+      # the exe and the hash in the release notes. `Get-FileHash` in PowerShell
+      # on the downloaded file should print the same thing.
       - run: |
           $v = "${{ github.ref_name }}"
-          Copy-Item dist\starstack.exe "dist\starstack-$v-windows.exe"
-          Get-FileHash "dist\starstack-$v-windows.exe" -Algorithm SHA256 | Format-List
+          $exe = "starstack-$v-windows.exe"
+          Copy-Item dist\starstack.exe "dist\$exe"
+          $h = (Get-FileHash "dist\$exe" -Algorithm SHA256).Hash.ToLower()
+          "$h  $exe" | Out-File -Encoding ascii dist\SHA256SUMS.txt
+          "**SHA256** of ``$exe``: ``$h``  (PowerShell: ``Get-FileHash $exe``)`n" | Out-File -Encoding utf8 dist\notes.md
+          Write-Host "sha256: $h"
         shell: pwsh
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/starstack-*-windows.exe
+          files: |
+            dist/starstack-*-windows.exe
+            dist/SHA256SUMS.txt
+          body_path: dist/notes.md
           generate_release_notes: true

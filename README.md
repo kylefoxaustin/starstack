@@ -458,23 +458,32 @@ FITS header, or the same as a JSON description tag in a TIFF.
 
 ## Install
 
-**Just want the button?** Grab `starstack-<version>-windows.exe` from the
-[Releases](https://github.com/kylefoxaustin/starstack/releases) page. One
-file, the owl is its icon, Python and everything else are inside it. Put it
-anywhere. Double-click to open; drag a folder onto it to stack. It's big
-(a couple hundred MB -- numpy, scipy and friends are in there) and the first
-launch takes a few seconds while it unpacks itself. No installer, nothing
-in the registry, delete the file and it's gone. `starstack.exe --cli ...`
-is the full command line, same flags as below.
+**Just want the button?** Windows 10 / 11:
 
-No account anywhere: not GitHub to download it, not PyPI, nothing. The one
-thing that will get in the way is Windows SmartScreen. The exe isn't
-code-signed (certificates cost real money every year; this is a hobby
-project), so the first time you run a freshly downloaded copy Windows says
-"Windows protected your PC". Click **More info**, then **Run anyway**. It
-asks once per download. If you'd rather not take a stranger's word for it,
-the source is right here and `build_exe.bat` makes the same file on your
-own machine.
+1. **Download** `starstack-<version>-windows.exe` from the
+   [Releases](https://github.com/kylefoxaustin/starstack/releases) page.
+   Nothing to install; it just runs. Put it anywhere.
+2. If a blue box says **"Windows protected your PC"**: click **More info**,
+   then **Run anyway**. Once per download.
+3. Double-click it, point it at the night's folder, press the button. Or
+   drag a folder onto the exe: that *is* the button press.
+
+One file, the owl is its icon, Python and everything else are inside it.
+It's big (a couple hundred MB -- numpy, scipy and friends are in there) and
+the first launch takes a few seconds while it unpacks itself. No installer,
+nothing in the registry, delete the file and it's gone. No account anywhere:
+not GitHub to download it, not PyPI, nothing. `starstack.exe --cli ...` is
+the full command line, same flags as below.
+
+Why the blue box? Windows trusts programs that are code-signed, and a signing
+certificate costs real money every year; this is a hobby project, so the exe
+isn't signed and SmartScreen will ask every time you download a new version,
+not just the first. What you get instead is a checksum: every release has a
+`SHA256SUMS.txt` beside the exe and the same hash in its notes. In PowerShell,
+`Get-FileHash starstack-<version>-windows.exe` should print that hash; if it
+doesn't, you don't have the file this page built. And if you'd rather not
+take a stranger's word for any of it, the source is right here and
+`build_exe.bat` makes the same file on your own machine.
 
 Windows Defender may go further and call a release a virus (`Wacatac`,
 `Wacapew`, anything ending in `!ml`). That's the heuristic reacting to how
