@@ -688,6 +688,10 @@ class App(tk.Tk):
         words = tk.Frame(top, bg=NAVY); words.pack(side="left", fill="x", expand=True)
         tk.Label(words, text="starstack", fg=CREAM, bg=NAVY, font=(SANS[0], 30, "bold")).pack(anchor="w")
         tk.Label(words, text="Stacking for people who'd rather be looking up.", fg="#c9cfe0", bg=NAVY, font=SANS).pack(anchor="w")
+        # the version, where people look when they wonder if they're current.
+        # turns into the update notice when they aren't.
+        self.ver_lbl = tk.Label(words, text=f"v{starstack_version()}", fg=MUTE, bg=NAVY, font=(SANS[0], 9), cursor="arrow")
+        self.ver_lbl.pack(anchor="w")
         self.mode_lbl = tk.Label(words, text="", fg=MUTE, bg=NAVY, font=MONO, justify="left", wraplength=520)
         self.mode_lbl.pack(anchor="w", pady=(6, 0))
 
@@ -756,6 +760,9 @@ class App(tk.Tk):
                   activebackground="#22304a", activeforeground=CREAM, relief="flat", padx=10, font=SANS).pack(side="left")
         self.opts_lbl = tk.Label(opts, text=summarize(self.settings), fg=MUTE, bg=NAVY, font=MONO)
         self.opts_lbl.pack(side="left", padx=(12, 0))
+        # the whole log to the clipboard, for pasting at whoever is helping you
+        tk.Button(opts, text="Copy log", command=self.copy_log, bg=NAVY2, fg="#c9cfe0",
+                  activebackground="#22304a", activeforeground=CREAM, relief="flat", padx=10, font=SANS).pack(side="right")
 
         body = tk.PanedWindow(self, orient="vertical", bg=NAVY, sashwidth=6, sashrelief="flat")
         body.pack(fill="both", expand=True, padx=18, pady=(6, 10))
@@ -787,7 +794,7 @@ class App(tk.Tk):
         for key, action in keys.items():
             self.bind_all(key, _nav(action))
         self.log.bind("<Button-1>", lambda e: self.log.focus_set())
-        body.add(logbox, minsize=160)
+        body.add(logbox, minsize=90)
         self.preview_frame = tk.Frame(body, bg=INK)
         self.preview_lbl = tk.Label(self.preview_frame, bg=INK, fg=MUTE, font=SANS,
                                     text="the picture shows up here")
@@ -811,6 +818,8 @@ class App(tk.Tk):
         self.status = tk.Label(foot, text="pick a folder.", fg=MUTE, bg=NAVY, font=SANS); self.status.pack(side="right")
 
         self._refresh_hints()
+        self.say("point me at a folder of frames, or a whole night of session folders, and press the button. "
+                 "That's the entire manual.\n", "owl")
         if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
             # a folder was dropped on the button: that IS the button press
             self.folder.set(sys.argv[1])
@@ -945,10 +954,20 @@ class App(tk.Tk):
         self.install_btn.config(text=f"Update scopepull to {latest}…")
         self.install_btn.pack(side="right", padx=(10, 0))
 
+    RELEASES = "https://github.com/kylefoxaustin/starstack/releases"
+
     def _starstack_latest(self, pair):
         mine, latest = pair
-        self.say(f"psst: starstack {latest} is out (this is {mine}). "
-                 f"github.com/kylefoxaustin/starstack/releases\n", "owl")
+        self.say(f"psst: starstack {latest} is out (this is {mine}). {self.RELEASES}\n", "owl")
+        self.ver_lbl.config(text=f"v{mine}  ·  {latest} is out. Click to get it.", fg="#f0cf96", cursor="hand2")
+        self.ver_lbl.bind("<Button-1>", lambda e: self._open_url(self.RELEASES))
+
+    def _open_url(self, url):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            self.say(f"{url}\n", "owl")
 
     def _pull_changed(self, save=True):
         if getattr(self, "_hinting", False):
@@ -1114,6 +1133,25 @@ class App(tk.Tk):
         else:
             self.mode_lbl.config(text="no images in there.")
 
+    def copy_log(self):
+        text = self.log.get("1.0", "end-1c")
+        try:
+            self.clipboard_clear(); self.clipboard_append(text)
+            n = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+            self.status.config(text=f"copied {n} lines. Paste them at someone.")
+        except tk.TclError:
+            self.status.config(text="couldn't reach the clipboard.")
+
+    def _split(self, log_share, animate=False):
+        """How the window is shared between log and picture. The log leads while
+        the owl works; the picture takes the stage once it exists."""
+        def place():
+            h = self.body.winfo_height()
+            if h > 50:
+                self.body.sash_place(0, 0, max(100, int(h * log_share)))
+                self.log.yview_moveto(1.0)      # keep the last lines in view in the strip
+        self.after(30 if animate else 0, place)
+
     def say(self, text, tag=None):
         """Append to the log the way a terminal would: `\n` ends the line, `\r`
         means the next text overwrites the current line. That's how starstack's
@@ -1214,6 +1252,7 @@ class App(tk.Tk):
         self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
         self._cr_pending = False
         self.preview_lbl.config(image="", text="working…")
+        self._split(0.72)                       # the log has the floor
         self.paused = False
         self.button.set_label("PAUSE"); self.stop_btn.config(state="normal"); self.open_btn.config(state="disabled")
         self.status.config(text="on the scope…" if pull else "stacking…")
@@ -1321,7 +1360,8 @@ class App(tk.Tk):
         if rc == 0:
             self.status.config(text="done. go outside.")
             self.set_face("grudging")           # the most he will give you
-            self._show_preview()
+            self._split(0.28)                   # the picture has the floor now
+            self.after(120, self._show_preview)
         else:
             self.status.config(text=f"stopped (exit {rc}). read the log.")
             self.set_face("furious")

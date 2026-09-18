@@ -285,6 +285,13 @@ a whole night that's been stacked before (after a fix, or a change of mind)
 and unticks itself when the run ends.
 Settings stick between launches (`~/.starstack.json`).
 
+**Copy log** puts the whole log on the clipboard, for pasting at whoever is
+helping you. The version sits under the tagline; when a newer starstack is
+out, that line says so and clicking it opens the releases page. While the
+owl works the log has most of the window; when the stack is done the picture
+takes over and the log becomes a strip (drag the bar between them if you
+disagree).
+
 <p align="center">
   <img src="docs/button_window.png" alt="the starstack window" width="640">
 </p>
