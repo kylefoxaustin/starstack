@@ -99,6 +99,12 @@ evening. It reads what is there and gets on with it.
 - **Sigma-clipped mean** by default — satellites, planes and cosmic rays:
   goodbye. `--method mean` for a fast streaming average with no scratch
   file, `--method median` if you'd rather.
+- **Fetches the frames itself, from two scopes.** A Unistellar Odyssey Pro
+  (`--pull`, via scopepull and the scope's download API) or a ZWO Seestar
+  S50 / S50 Pro (`--pull-seestar`: the scope is a folder on USB or a share
+  on Wi-Fi, so it's a copy). Either way: new frames into an archive split by
+  night, then the archive stacked, then the already-stacked rule keeps the
+  next night cheap. In the window each is one row and one tick.
 
 ## Whole-night mode
 
@@ -306,9 +312,8 @@ the run for good.
 **Odyssey** is the row for people who own a Unistellar Odyssey Pro and have
 [scopepull](https://pypi.org/project/scopepull/) installed -- scopepull
 speaks the Odyssey's own download API and nothing else, so this row is for
-that scope only (Seestar owners: your frames are already on the SD card /
-MyWorks share; point the Folder row at them). Tick *Pull new observations off
-the Odyssey Pro first* and the big red button becomes
+that scope only (Seestar owners have their own row, next). Tick *Pull new
+observations off the Odyssey Pro first* and the big red button becomes
 **PULL+STACK**: on your scope's Wi-Fi, one press downloads whatever is new
 into scopepull's archive (or the folder you named, if you named one), then
 stacks the archive -- targets already stacked are skipped, so a quiet night
@@ -322,7 +327,21 @@ At startup the window also asks PyPI, once, whether a newer scopepull
 exists and offers **Update scopepull…** if so, and asks GitHub whether a
 newer starstack exists and mentions it in the log. One small request each,
 nothing sent, three-second timeout, silent when there's no internet (which,
-on the scope's Wi-Fi, there isn't). While the download runs the owl shuts
+on the scope's Wi-Fi, there isn't).
+
+**Seestar** is the row for a ZWO Seestar S50 or S50 Pro, and it needs
+nothing installed: the scope is a folder. Tick *Pull new subs off the
+Seestar first* and the button reads **PULL+STACK**; one press copies every
+sub-frame the archive hasn't got into `~/Astro/seestar/<night>/<target>/`
+(or the folder you named), then stacks the archive. The owl looks for the
+scope on its own -- a USB drive with `MyWorks` on it first, then
+`\\seestar` over Wi-Fi in station mode -- and the line under the row says
+where it found it ("Seestar on Wi-Fi at seestar (10.0.1.215)") or why not.
+The *at* box is for when it can't: a drive letter, a folder, a UNC path, or
+the scope's address from the Seestar app. Ticking one scope's row unticks
+the other; a press pulls from one scope. What is and isn't copied, and the
+two Windows settings a Wi-Fi pull needs, are under *Straight off the scope*
+above. While the download runs the owl shuts
 his eyes; there is nothing to judge yet.
 
 **Options…** opens the overrides: every flag in the table below, with a plain
@@ -620,6 +639,14 @@ Bayer frames with 400 hot pixels, a satellite streak, three truncated frames
   folder, end to end (the before/after pairs under *Output*); later six
   observations pulled off the scope by the button itself, on a laptop that
   had never seen any of it
+- a real Seestar S50 Pro, the night it arrived: 21 subs of NGC 7000
+  (3840×2160 FITS, `BAYERPAT = 'GRBG'`, LP filter) pulled from the USB drive
+  into `~/Astro/seestar/2026-09-22/NGC 7000/` and stacked -- the result
+  matches the scope's own stack for colour -- and the same `MyWorks`
+  reached over Wi-Fi at `\\10.0.1.215\EMMC Images` (Samba 4.19.5, guest)
+  once Windows 11 was told to allow it; plus a synthetic `MyWorks` with a
+  mosaic, a lunar folder and a session across midnight to pin down what
+  gets copied where
 - the Windows exe, on every release build, stacking a FITS archive before it
   is allowed to upload (`smoke_frozen.py`) — because 0.2.5 to 0.2.13 shipped
   with astropy unable to import inside the exe, so every FITS file was
