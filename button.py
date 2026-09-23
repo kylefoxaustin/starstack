@@ -289,6 +289,8 @@ DEFAULTS = {
     "scratch": "",         # "" = system temp; the 10+ GB cube goes here
     "pull": False,         # fetch new observations off an Odyssey Pro (scopepull) before stacking
     "restack": False,      # redo sessions that already have a stack (one run, then off)
+    "pull_seestar": False, # copy new subs off a Seestar (S50 / S50 Pro) before stacking
+    "seestar_at": "",      # "" = look (USB drive, then \\seestar); else a drive, folder, UNC path or host/IP
     "pull_target": "",     # with pull: only observations whose target matches this
 }
 LABELS = {  # what the main window says when something is off-default
@@ -308,8 +310,11 @@ LABELS = {  # what the main window says when something is off-default
     "pull": lambda v: None,             # has its own row too
     "pull_target": lambda v: None,
     "restack": lambda v: "redo already-stacked sessions" if v else None,
+    "pull_seestar": lambda v: None,     # its own row
+    "seestar_at": lambda v: None,
 }
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".starstack.json")
+SEESTAR_ROOT = os.path.join(os.path.expanduser("~"), "Astro", "seestar")    # starstack.seestar_archive_root()
 
 
 def load_settings():
@@ -635,8 +640,8 @@ class App(tk.Tk):
         self.title("starstack")
         self.configure(bg=NAVY)
         self._set_icon()
-        self.geometry("880x720")
-        self.minsize(720, 560)
+        self.geometry("880x760")
+        self.minsize(720, 600)
         self.proc = None
         self.paused = False
         self.q = queue.Queue()
@@ -738,6 +743,32 @@ class App(tk.Tk):
         self.scopepull = (None, None, None)          # (version, archive root, exe path)
         threading.Thread(target=self._probe_scopepull, daemon=True).start()
         threading.Thread(target=self._check_self, daemon=True).start()
+
+        # the Seestar row: an S50 / S50 Pro is a folder (USB drive, or the guest
+        # share \\\\seestar on Wi-Fi in station mode), so the pull is a copy the
+        # owl does itself. Nothing to install. The box is never greyed out: the
+        # scope may be switched on after the owl was.
+        zrow = tk.Frame(self, bg=NAVY); zrow.pack(fill="x", padx=18, pady=(0, 8))
+        tk.Label(zrow, text="Seestar", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
+        self.seestar_var = tk.BooleanVar(value=bool(self.settings.get("pull_seestar")))
+        self.seestar_chk = tk.Checkbutton(zrow, text="Pull new subs off the Seestar first", variable=self.seestar_var,
+                                          bg=NAVY, fg="#c9cfe0", selectcolor=NAVY2, activebackground=NAVY,
+                                          activeforeground=CREAM, font=SANS, highlightthickness=0, bd=0,
+                                          command=self._seestar_changed)
+        self.seestar_chk.pack(side="left")
+        tk.Label(zrow, text="at", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(14, 6))
+        self.seestar_at = tk.StringVar(value=self.settings.get("seestar_at", ""))
+        self.seestar_at.trace_add("write", lambda *_: self._seestar_changed())
+        self.seestar_entry = tk.Entry(zrow, textvariable=self.seestar_at, width=18, bg=NAVY2, fg=CREAM,
+                                      insertbackground=CREAM, relief="flat", font=MONO)
+        self.seestar_entry.pack(side="left", ipady=4)
+        self._hint_bind(self.seestar_entry, self.seestar_at)
+        zhint = tk.Frame(self, bg=NAVY); zhint.pack(fill="x", padx=18, pady=(0, 6))
+        tk.Label(zhint, text="", bg=NAVY, font=SANS, width=7).pack(side="left", padx=(0, 8))
+        self.seestar_lbl = tk.Label(zhint, text="looking for a Seestar…", fg=MUTE, bg=NAVY, font=(SANS[0], 9), anchor="w")
+        self.seestar_lbl.pack(side="left", fill="x", expand=True)
+        self.seestar_found = None                     # (how, MyWorks path) once the probe answers
+        threading.Thread(target=self._probe_seestar, daemon=True).start()
 
         orow = tk.Frame(self, bg=NAVY); orow.pack(fill="x", padx=18, pady=(0, 8))
         tk.Label(orow, text="Output", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
@@ -898,13 +929,19 @@ class App(tk.Tk):
     def _refresh_hints(self):
         if not hasattr(self, "target_entry"):
             return
-        if self.pulling():
+        if self.pulling() == "odyssey":
             self._hint_set(self.folder_entry, self.folder,
                            f"empty = scopepull's archive, {self.scopepull[1]}   (or a folder to pull into and stack)")
             self._hint_set(self.target_entry, self.pull_target, "all targets")
+        elif self.pulling() == "seestar":
+            self._hint_set(self.folder_entry, self.folder,
+                           f"empty = the Seestar archive, {SEESTAR_ROOT}   (or a folder to pull into and stack)")
+            self._hint_set(self.target_entry, self.pull_target, "")
         else:
             self._hint_set(self.folder_entry, self.folder, "a folder of frames, or a folder of session folders")
             self._hint_set(self.target_entry, self.pull_target, "")
+        if hasattr(self, "seestar_entry"):
+            self._hint_set(self.seestar_entry, self.seestar_at, "USB, then \\\\seestar")
 
     # ---- the scope ----------------------------------------------------------
     def _probe_scopepull(self):
@@ -980,6 +1017,9 @@ class App(tk.Tk):
                          "button next to that line does it. The Folder row still works for frames you already have.\n", "bad")
             return
         on = bool(self.pull_var.get()) and self.scopepull[0] is not None
+        if on and getattr(self, "seestar_var", None) and self.seestar_var.get():
+            self.seestar_var.set(False)                # one scope per press
+            self.settings["pull_seestar"] = False
         self.settings["pull"] = bool(self.pull_var.get())
         self.settings["pull_target"] = self._real(self.target_entry, self.pull_target)
         if save:
@@ -990,8 +1030,59 @@ class App(tk.Tk):
         self._describe()
 
     def pulling(self):
-        """Is the next press a pull-then-stack?"""
-        return bool(self.pull_var.get()) and self.scopepull[0] is not None
+        """Is the next press a pull-then-stack? Which scope: "odyssey", "seestar", or None."""
+        if bool(self.pull_var.get()) and self.scopepull[0] is not None:
+            return "odyssey"
+        if bool(getattr(self, "seestar_var", None) and self.seestar_var.get()):
+            return "seestar"
+        return None
+
+    # ---- the Seestar --------------------------------------------------------
+    def _probe_seestar(self):
+        """Ask starstack where the scope is (USB drive, then \\\\seestar). It answers
+        'found <how>\\n<MyWorks path>' or 'none: <why>'."""
+        at = self.settings.get("seestar_at", "") or ""
+        if FROZEN:
+            cmd = [sys.executable, "--cli", f"--find-seestar={at}"]
+        else:
+            cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), STARSTACK, f"--find-seestar={at}"]
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=60, creationflags=flags).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            out = "none: couldn't ask"
+        self.q.put(("seestar", out))
+
+    def _seestar_probed(self, out):
+        if out.startswith("found"):
+            how, _, path = out.partition("\n")
+            self.seestar_found = (how[6:], path)
+            self.seestar_lbl.config(text=f"Seestar {how[6:]}  ·  archive: {SEESTAR_ROOT}")
+        else:
+            self.seestar_found = None
+            why = out[5:].strip() or "not found"
+            self.seestar_lbl.config(text=f"no Seestar right now ({why}). USB, or station mode on the same Wi-Fi.")
+
+    def _seestar_changed(self, save=True):
+        if getattr(self, "_hinting", False) or not hasattr(self, "seestar_var"):
+            return
+        if self.seestar_var.get() and self.pull_var.get():
+            self.pull_var.set(False)                   # one scope per press
+            self.settings["pull"] = False
+        self.settings["pull_seestar"] = bool(self.seestar_var.get())
+        at = self._real(self.seestar_entry, self.seestar_at)
+        if at != self.settings.get("seestar_at", ""):
+            self.settings["seestar_at"] = at
+            if getattr(self, "_seestar_probe_job", None):
+                self.after_cancel(self._seestar_probe_job)
+            self.seestar_lbl.config(text="looking for a Seestar…")
+            self._seestar_probe_job = self.after(900, lambda: threading.Thread(target=self._probe_seestar, daemon=True).start())
+        if save:
+            save_settings(self.settings)
+        if not self.running():
+            self.button.set_label("PULL+STACK" if self.pulling() else "STACK")
+        self._refresh_hints()
+        self._describe()
 
     # ---- installing scopepull -----------------------------------------------
     def install_scopepull(self):
@@ -1110,7 +1201,13 @@ class App(tk.Tk):
         if getattr(self, "_hinting", False):
             return
         f = self._real(self.folder_entry, self.folder)
-        if getattr(self, "scopepull", (None, None, None))[0] is not None and self.pulling():
+        if self.pulling() == "seestar":
+            where = f or SEESTAR_ROOT
+            at = self._real(self.seestar_entry, self.seestar_at) or "wherever it is (USB, then \\\\seestar)"
+            self.mode_lbl.config(text=f"copy new subs off the Seestar at {at} into {where}, then stack the archive "
+                                      f"(targets already stacked are skipped)")
+            return
+        if getattr(self, "scopepull", (None, None, None))[0] is not None and self.pulling() == "odyssey":
             where = f or self.scopepull[1]
             tgt = self._real(self.target_entry, self.pull_target)
             what = f"new {tgt!r} observations" if tgt else "everything new"
@@ -1210,9 +1307,9 @@ class App(tk.Tk):
             except OSError as e:
                 self.say(f"can't create the output folder {chosen}: {e}\n", "bad"); return
         if pull:
-            # scopepull fills the archive (the folder box, or its own configured
+            # the puller fills the archive (the folder box, or the scope's own
             # root); starstack then treats that archive as a night of nights.
-            archive = f or self.scopepull[1]
+            archive = f or (self.scopepull[1] if pull == "odyssey" else SEESTAR_ROOT)
             self.out_dir = chosen or os.path.join(archive, "stacks")
             out_arg = self.out_dir
             self.preview_path = None
@@ -1233,13 +1330,17 @@ class App(tk.Tk):
             cmd = [sys.executable, "--cli"]                      # the exe, in CLI mode
         else:
             cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), "-u", STARSTACK]
-        if pull:
+        if pull == "odyssey":
             cmd += ["--pull"]
             tgt = self._real(self.target_entry, self.pull_target)
             if tgt:
                 cmd += ["--pull-target", tgt]
             if f:
                 cmd += [f]                                       # pull into (and stack) this folder
+        elif pull == "seestar":
+            cmd += [f"--pull-seestar={self._real(self.seestar_entry, self.seestar_at)}"]
+            if f:
+                cmd += [f]
         else:
             cmd += [f]
         cmd += ["-o", out_arg]
@@ -1283,6 +1384,8 @@ class App(tk.Tk):
                 kind, payload = self.q.get_nowait()
                 if kind == "scopepull":
                     self._scopepull_found(payload)
+                elif kind == "seestar":
+                    self._seestar_probed(payload)
                 elif kind == "scopepull_latest":
                     self._scopepull_latest(payload)
                 elif kind == "starstack_latest":

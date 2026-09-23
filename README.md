@@ -177,6 +177,56 @@ Then enable **Direct Data Download** in the Unistellar app (once), join the
 scope's Wi-Fi (`Odyssey-xxxx`), and run `starstack --pull`. If scopepull isn't
 installed, the owl tells you how to get it and carries on being a stacker.
 
+## Straight off the scope: `--pull-seestar` (ZWO Seestar S50 / S50 Pro)
+
+A Seestar needs no puller at all, because a Seestar is a folder. Plug it in
+by USB and its storage shows up as a drive with `MyWorks` on it; put it in
+**station mode** (Seestar app → Advanced) and the same `MyWorks` is a guest
+network share, `\\seestar\EMMC Images`. Either way, every target's
+sub-frames sit in `MyWorks\<target>_sub\` as `Light_..._<date>-<time>.fit`,
+so the pull is a copy: every sub the archive hasn't got, into
+`~/Astro/seestar/<night>/<target>/`, then the archive gets stacked like any
+other whole night.
+
+```
+python starstack.py --pull-seestar                 # look for it: USB drive first, then \\seestar
+python starstack.py --pull-seestar=D:              # the USB drive
+python starstack.py --pull-seestar=10.0.1.215      # by address, when the name doesn't resolve
+python starstack.py --pull-seestar=seestar --pull-target "M 31"
+```
+
+(`starstack.exe --cli --pull-seestar` from the Windows build; write the
+address with `=` so a folder after it isn't taken for the address. In the
+window it's the **Seestar** row: tick it, leave *at* empty unless the owl
+can't find the scope on its own, press the button.)
+
+What it copies: the `.fit` subs, and only those. The JPEGs and thumbnails
+next to them, the scope's own `Stacked_*.fit`, `Lunar_*` and `*_video`
+folders, and `*_mosaic` panels (different fields of sky; a stack of them is
+soup) all stay on the scope. A sub taken before noon belongs to the evening
+before, so a session that runs past midnight is one night, not two. A second
+pull copies nothing and says so; a pull that finds nothing new still stacks
+the archive, which the already-stacked rule turns into "nothing to do".
+The scope isn't touched: the owl only ever reads from it.
+
+**Seestar over Wi-Fi on Windows 11.** The scope's share is an old-fashioned
+one -- no password, and it can't sign its traffic -- and since the 24H2
+update Windows refuses both by default, so `\\seestar` looks like it
+doesn't exist even though `ping seestar` answers. Two settings fix it,
+once, in an **administrator** PowerShell (no reboot):
+
+```
+Set-SmbClientConfiguration -RequireSecuritySignature $false -Force
+Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -Force
+```
+
+Those loosen your laptop's file-sharing client for every share it talks
+to, which is fine on a home network and is the trade every Seestar owner on
+a current Windows makes. The owl does the remaining step itself (the guest
+login to the scope that `net use \\seestar\IPC$ /user:guest` would do by
+hand), so after those two lines the Seestar row just works. USB needs
+none of this.
+
 ## Sorted folders, and sorting one
 
 Seestar saves a target as `lights/` and `darks/` subfolders. starstack reads
@@ -393,6 +443,7 @@ takes out.
 | `--sort` / `--sort --dry-run` | sort a one-pile folder into lights/ darks/ ... and stop |
 | `--pull` / `--pull-target TEXT` | fetch new observations off the scope with scopepull first, then stack the archive |
 | `--restack` | whole-night mode: redo sessions whose output already exists and is up to date |
+| `--pull-seestar[=WHERE]` | copy new subs off a Seestar (USB drive, `\\seestar`, a host/IP or a folder) into `~/Astro/seestar`, then stack |
 | `--scratch DIR` | where the temporary cube goes (default: system temp) |
 | `--no-log` | don't write the .log next to the output |
 | `-q` | quiet |
@@ -452,6 +503,13 @@ FITS header, or the same as a JSON description tag in a TIFF.
   mistaken for a second one, and the 1,400 JPEGs are removed from the pile
   in two lines. Point it at `M81/` by mistake and it says "that's the results
   folder, the frames are next door" and uses them.
+- **Seestar S50 Pro**: same `MyWorks` layout, same honest `BAYERPAT = 'GRBG'`,
+  bigger sensor: subs are 3840×2160 16-bit FITS (2.9 µm pixels, 260 mm,
+  `FILTER = 'LP'` or `IRCUT`), 16.6 MB each, so a scratch cube for 300 of them
+  is 9 GB. Verified on a real 21-sub NGC 7000 session, pulled over USB
+  (`D:\MyWorks`) and over Wi-Fi (`\\seestar\EMMC Images`, Samba 4.19,
+  guest): the owl's stack matches the scope's own for colour, and the 30 % of
+  the folder that's JPEGs and thumbnails never leaves the scope.
 - Files that came *out of Siril* are 32-bit float, already-debayered or
   already-converted. That's why other stackers think they're finished
   products. This tool doesn't care — it reads them like anything else.

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.18"
+__version__ = "0.2.19"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -627,6 +627,199 @@ def run_scopepull(folder, target, log):
     return dest
 
 
+# ---- Seestar (S50 / S50 Pro): a folder, not a portal --------------------------
+#
+# A Seestar keeps every target in MyWorks/<target>/ (its own stacked result)
+# and the sub-frames in MyWorks/<target>_sub/ (one .fit + .jpg + _thn.jpg per
+# sub). Plugged in by USB the eMMC mounts as a drive; on Wi-Fi in station mode
+# it's a guest Samba share, \\seestar\EMMC Images. Either way the pull is a
+# copy: every .fit sub the archive hasn't got, into <root>/<night>/<target>/.
+# Nothing to install, nothing to version. No JPEGs, no thumbnails, no mosaics
+# (the panels of a mosaic are different fields; a stack of them is soup).
+
+SEESTAR_SHARE = "EMMC Images"
+SEESTAR_HOSTS = ("seestar", "seestar.local")
+SEESTAR_SKIP = ("_mosaic", "lunar_", "solar_", "_video")
+
+
+def seestar_archive_root() -> str:
+    return os.path.join(os.path.expanduser("~"), "Astro", "seestar")
+
+
+def _seestar_myworks(path: str):
+    """Given a drive, a share, a scope folder or MyWorks itself, return the
+    MyWorks folder if it's there (and readable), else None."""
+    if not path:
+        return None
+    path = os.path.expanduser(path).rstrip("/\\") or path
+    for cand in (path, os.path.join(path, "MyWorks"), os.path.join(path, SEESTAR_SHARE, "MyWorks")):
+        try:
+            if os.path.isdir(cand) and any(d.lower().endswith("_sub") for d in os.listdir(cand)):
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _smb_guest(host: str, log=None) -> bool:
+    """Windows won't open a passwordless share without being told to. Make the
+    guest session for the scope's IPC$ ourselves (the `net use ... /user:guest`
+    everyone ends up typing), silently, then the UNC path just works. On
+    anything but Windows the OS mounts shares its own way; nothing to do."""
+    if not sys.platform.startswith("win"):
+        return True
+    import subprocess
+    try:
+        r = subprocess.run(["net", "use", f"\\\\{host}\\IPC$", "", "/user:guest"],
+                           input="\n", capture_output=True, text=True, timeout=20,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        if r.returncode != 0 and log:
+            log(f"  (guest login to \\\\{host} refused: {(r.stderr or r.stdout).strip()[:120]})")
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _resolve(host: str):
+    import socket
+    try:
+        return socket.gethostbyname(host)
+    except OSError:
+        return None
+
+
+def find_seestar(spec=None, log=print):
+    """Where is the scope? `spec` is whatever the user gave: nothing (look for
+    it), a drive/folder (USB), a UNC path, or a hostname/IP (Wi-Fi). Returns
+    (myworks_path, how) or (None, why-not)."""
+    tried = []
+    if spec:
+        spec = spec.strip().strip('"')
+        # a folder or drive letter or UNC path
+        if os.path.sep in spec or "/" in spec or (len(spec) == 2 and spec[1] == ":") or spec.startswith("\\\\"):
+            if spec.startswith("\\\\"):
+                _smb_guest(spec.strip("\\").split("\\")[0], log)
+            mw = _seestar_myworks(spec)
+            return (mw, f"at {spec}") if mw else (None, f"no MyWorks folder at {spec}")
+        hosts = [spec]                      # hostname or IP
+    else:
+        # USB first: a drive whose root holds MyWorks. Only Windows mounts it as a letter;
+        # on Linux/macOS it lands under /media or /Volumes, which the user can pass in.
+        if sys.platform.startswith("win"):
+            import string
+            for letter in string.ascii_uppercase[3:]:          # C: is never the scope
+                mw = _seestar_myworks(f"{letter}:\\")
+                if mw:
+                    return mw, f"on USB, drive {letter}:"
+        hosts = list(SEESTAR_HOSTS)
+    for h in hosts:
+        ip = _resolve(h)
+        if not ip:
+            tried.append(f"{h}: no such host"); continue
+        _smb_guest(ip, log)
+        unc = f"\\\\{ip}\\{SEESTAR_SHARE}" if sys.platform.startswith("win") else f"//{ip}/{SEESTAR_SHARE}"
+        mw = _seestar_myworks(unc)
+        if mw:
+            return mw, f"on Wi-Fi at {h} ({ip})"
+        tried.append(f"{h} ({ip}): answers, but no share the owl can read")
+    return None, "; ".join(tried) if tried else "nothing given"
+
+
+def _seestar_night(name: str):
+    """Night of a Seestar sub from its filename: Light_M 31_10.0s_LP_20260922-203537.fit
+    -> 2026-09-22. Anything before noon belongs to the evening before."""
+    import re
+    m = re.search(r"_(\d{4})(\d{2})(\d{2})-(\d{2})\d{4}", name)
+    if not m:
+        return None
+    y, mo, d, hh = (int(x) for x in m.groups())
+    import datetime
+    day = datetime.date(y, mo, d)
+    if hh < 12:
+        day -= datetime.timedelta(days=1)
+    return day.isoformat()
+
+
+def pull_seestar(myworks: str, root: str, log=print, target=None) -> tuple:
+    """Copy every sub-frame the archive hasn't got. Returns (copied, skipped,
+    nights_touched)."""
+    import shutil
+    copied = skipped = 0
+    nights = set()
+    subs = sorted(d for d in os.listdir(myworks) if d.lower().endswith("_sub")
+                  and os.path.isdir(os.path.join(myworks, d)))
+    for d in subs:
+        tname = d[:-4]
+        low = tname.lower()
+        if any(k in low for k in SEESTAR_SKIP):
+            log(f"  {tname}: skipped ({'mosaic panels' if '_mosaic' in low else 'not a deep-sky stack'})")
+            continue
+        if target and target.lower() not in low:
+            continue
+        src = os.path.join(myworks, d)
+        try:
+            fits_files = sorted(f for f in os.listdir(src) if f.lower().endswith((".fit", ".fits")))
+        except OSError as e:
+            log(f"  {tname}: can't list: {e}"); continue
+        new = []
+        for f in fits_files:
+            night = _seestar_night(f) or "undated"
+            dest_dir = os.path.join(root, night, tname)
+            dest = os.path.join(dest_dir, f)
+            sp = os.path.join(src, f)
+            try:
+                if os.path.exists(dest) and os.path.getsize(dest) == os.path.getsize(sp):
+                    skipped += 1; continue
+            except OSError:
+                pass
+            new.append((sp, dest_dir, dest, night))
+        if not new:
+            log(f"  {tname}: {len(fits_files)} subs, nothing new")
+            continue
+        log(f"  {tname}: {len(new)} new sub{'s' if len(new) != 1 else ''} of {len(fits_files)}")
+        for i, (sp, dest_dir, dest, night) in enumerate(new, 1):
+            os.makedirs(dest_dir, exist_ok=True)
+            part = dest + ".part"
+            try:
+                shutil.copyfile(sp, part)
+                os.replace(part, dest)
+            except OSError as e:
+                log(f"    {os.path.basename(sp)}: {e}")
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+                continue
+            copied += 1; nights.add(night)
+            if hasattr(log, "raw"):
+                log.raw(f"    copying {i}/{len(new)}\r")
+        if hasattr(log, "raw"):
+            log.raw(f"    copying {len(new)}/{len(new)}\n")
+        log(f"    into {os.path.join(root, night, tname)}")
+    return copied, skipped, nights
+
+
+def run_seestar_pull(spec, folder, target, log):
+    """The --pull-seestar step: find the scope, sync its subs into the archive,
+    return the archive folder to stack (or None)."""
+    root = folder or seestar_archive_root()
+    myworks, how = find_seestar(spec, log)
+    if not myworks:
+        log(f"can't find a Seestar: {how}.")
+        log("  USB: plug the scope in and wait for its drive to appear.")
+        log("  Wi-Fi: station mode on in the Seestar app, laptop on the same network. If Windows still can't")
+        log("  see it, see 'Seestar over Wi-Fi' in the README (two one-line SMB settings).")
+        return None
+    log(f"owl found the Seestar {how}. Archive: {root}")
+    os.makedirs(root, exist_ok=True)
+    copied, skipped, nights = pull_seestar(myworks, root, log, target)
+    if copied:
+        log(f"pulled {copied} new sub{'s' if copied != 1 else ''} ({skipped} already had). Stacking the archive.")
+    else:
+        log(f"nothing new on the scope ({skipped} subs already in the archive). Stacking what's there.")
+    return root
+
+
 def relay(cmd, log) -> int:
     """Run a helper and pass its output through our own stdout and log file.
 
@@ -707,7 +900,13 @@ def main(argv=None):
                    help="fetch new observations off the scope with scopepull, then stack them "
                         "(needs scopepull: uv tool install scopepull)")
     p.add_argument("--pull-target", default=None, metavar="TEXT",
-                   help="with --pull: only fetch observations whose target matches TEXT")
+                   help="with --pull / --pull-seestar: only fetch observations whose target matches TEXT")
+    p.add_argument("--pull-seestar", nargs="?", const="", default=None, metavar="WHERE",
+                   help="copy new sub-frames off a Seestar (S50 / S50 Pro) into ~/Astro/seestar, then stack. "
+                        "WHERE: nothing (look on USB, then \\\\seestar), a drive or folder, a UNC path, or a host/IP. "
+                        "Write it --pull-seestar=WHERE so a folder after it isn't mistaken for WHERE.")
+    p.add_argument("--find-seestar", nargs="?", const="", default=None, metavar="WHERE",
+                   help="just say where the Seestar is (or isn't) and exit; the button uses this")
     p.add_argument("-o", "--out", default="stacked.tif",
                    help="output file; .tif/.tiff or .fit/.fits (default: stacked.tif)")
     p.add_argument("--method", choices=["sigma", "mean", "median"], default="sigma")
@@ -753,12 +952,22 @@ def main(argv=None):
         v = getattr(args, name, None)
         if isinstance(v, str) and v.startswith("~"):
             setattr(args, name, os.path.expanduser(v))
-    if args.folder and not args.pull and not any(ch in args.folder for ch in "*?[") and not os.path.exists(args.folder):
+    if args.folder and not args.pull and args.pull_seestar is None \
+            and not any(ch in args.folder for ch in "*?[") and not os.path.exists(args.folder):
         log(f"no such folder: {args.folder}")
         return 2
 
     if args.pull:
         dest = run_scopepull(args.folder, args.pull_target, log)
+        if dest is None:
+            return 3
+        args.folder = dest
+    if args.find_seestar is not None:
+        mw, how = find_seestar(args.find_seestar, log=lambda *a, **k: None)
+        print(f"found {how}\n{mw}" if mw else f"none: {how}")
+        return 0 if mw else 3
+    if args.pull_seestar is not None:
+        dest = run_seestar_pull(args.pull_seestar, args.folder, args.pull_target, log)
         if dest is None:
             return 3
         args.folder = dest

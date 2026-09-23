@@ -246,6 +246,46 @@ def test_wrong_bayer_header_is_overruled_by_the_pixels(tmp_path):
     assert "Pixels win" not in r.stdout and "debayering as GRBG" in r.stdout
 
 
+def test_seestar_pull_syncs_subs_by_night(tmp_path):
+    """A Seestar's MyWorks (USB drive or \\\\seestar share): every <target>_sub/*.fit
+    the archive hasn't got is copied to <root>/<night>/<target>/; JPEGs,
+    thumbnails, the scope's own Stacked_*.fit, mosaics and lunar folders are
+    left behind; a second pull copies nothing; nights split at noon."""
+    import starstack as ss
+    mw = tmp_path / "EMMC Images" / "MyWorks"
+    def sub(target, stamps):
+        d = mw / f"{target}_sub"; d.mkdir(parents=True)
+        for st in stamps:
+            (d / f"Light_{target}_10.0s_LP_{st}.fit").write_bytes(b"SIMPLE" + b"\0" * 100)
+            (d / f"Light_{target}_10.0s_LP_{st}.jpg").write_bytes(b"jpg")
+            (d / f"Light_{target}_10.0s_LP_{st}_thn.jpg").write_bytes(b"thn")
+        r = mw / target; r.mkdir()
+        (r / f"Stacked_{len(stamps)}_{target}_10.0s_LP_{stamps[-1]}.fit").write_bytes(b"STACK")
+    sub("NGC 7000", ["20260922-203537", "20260922-203551"])
+    sub("M 31", ["20260919-235900", "20260920-001200"])          # straddles midnight: one night
+    sub("M 31_mosaic", ["20260919-230000"])
+    sub("Lunar_photo", ["20260922-201600"])
+
+    log = ss.Logger(True, None)
+    assert ss._seestar_myworks(str(tmp_path)) == str(mw)         # drive root -> share -> MyWorks
+    assert ss._seestar_myworks(str(mw)) == str(mw)
+    root = tmp_path / "archive"
+    copied, skipped, nights = ss.pull_seestar(str(mw), str(root), log)
+    assert (copied, skipped) == (4, 0) and nights == {"2026-09-22", "2026-09-19"}
+    assert sorted(p.name for p in (root / "2026-09-22" / "NGC 7000").iterdir()) == [
+        "Light_NGC 7000_10.0s_LP_20260922-203537.fit", "Light_NGC 7000_10.0s_LP_20260922-203551.fit"]
+    assert len(list((root / "2026-09-19" / "M 31").iterdir())) == 2
+    assert not (root / "2026-09-19" / "M 31_mosaic").exists()
+    assert not any("Lunar" in p.name for p in root.rglob("*"))
+    assert not list(root.rglob("*.jpg")) and not list(root.rglob("Stacked_*"))
+    copied, skipped, _ = ss.pull_seestar(str(mw), str(root), log)
+    assert (copied, skipped) == (0, 4)
+    copied, _, _ = ss.pull_seestar(str(mw), str(root), log, target="ngc")
+    assert copied == 0
+    # the archive is a whole-night tree the owl already understands
+    assert sorted(os.path.basename(x) for x in ss.find_sessions(str(root))) == ["M 31", "NGC 7000"]
+
+
 def test_scopepull_archive_layout(tmp_path):
     """A scopepull archive is <root>/<date>/<observation>/. Pointed at the
     root it stacks every observation of every night; each observation is
