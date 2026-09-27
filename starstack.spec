@@ -18,7 +18,7 @@ datas += collect_data_files("skimage", include_py_files=False)
 
 hidden = (collect_submodules("astroalign") + collect_submodules("sep_pjw") + collect_submodules("sep")
           + collect_submodules("skimage.transform") + collect_submodules("scipy.ndimage")
-          + collect_submodules("scipy.spatial") + ["imagecodecs", "tifffile", "PIL.ImageTk"])
+          + collect_submodules("scipy.spatial") + ["imagecodecs", "tifffile", "PIL.ImageTk", "mosaic"])
 
 a = Analysis(
     ["starstack_app.py"],

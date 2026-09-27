@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starstack"
-version = "0.2.19"
+version = "0.2.20"
 description = "Dump a folder of frames in. Push one button. Get a stacked astro image out."
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,7 +37,7 @@ starstack = "starstack:main"
 starstack-button = "button:main"
 
 [tool.setuptools]
-py-modules = ["starstack", "button"]
+py-modules = ["starstack", "mosaic", "button"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

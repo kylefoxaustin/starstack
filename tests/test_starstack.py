@@ -246,6 +246,40 @@ def test_wrong_bayer_header_is_overruled_by_the_pixels(tmp_path):
     assert "Pixels win" not in r.stdout and "debayering as GRBG" in r.stdout
 
 
+def test_mosaic_is_tiled_onto_one_canvas(tmp_path):
+    """A Seestar framing-mode session: five panels, each visited twice, dithered,
+    the camera turned 37 deg and mirrored (the stacker isn't told), 6 deg of field
+    rotation over the run. Every frame must be placed, the output must be bigger
+    than a frame, and it must match the scene the frames were cut from to within
+    the per-frame noise -- no level steps between panels."""
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    from mosaic_synth import make_session
+    d = tmp_path / "NGC 7000_mosaic"
+    scene, truth = make_session(str(d), visits=2, per_visit=2)
+    out = tmp_path / "m.tif"
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "starstack.py"), str(d), "-o", str(out),
+                        "-j", "2", "--no-log"], capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Tiling them" in r.stdout and "placed all 20" in r.stdout, r.stdout
+    assert "mirrored" in r.stdout                                  # the flip was found
+    import tifffile, cv2, astroalign as aa
+    st = tifffile.imread(str(out)).astype(np.float32) / 65535
+    assert st.shape[0] > 800 * 1.5 and st.shape[1] > 560 * 1.5, st.shape   # bigger than one frame
+    lum = st.mean(-1)
+    tf, (src, _) = aa.find_transform(lum, scene, max_control_points=400)
+    assert len(src) > 80 and abs(tf.scale - 1) < 0.01
+    M = np.asarray(tf.params)[:2]
+    back = cv2.warpAffine(lum, M, (scene.shape[1], scene.shape[0]), flags=cv2.INTER_LINEAR, borderValue=np.nan)
+    m = np.isfinite(back) & (back > 0)
+    A = np.vstack([back[m], np.ones(m.sum())]).T
+    coef, *_ = np.linalg.lstsq(A, scene[m], rcond=None)
+    res = scene[m] - A @ coef
+    assert res.std() < 0.008, res.std()                          # per-frame noise is 0.004
+    smooth = cv2.blur(np.where(m, scene - np.nan_to_num(back) * coef[0] - coef[1], 0).astype(np.float32), (31, 31))
+    lo, hi = np.percentile(smooth[m], [5, 95])
+    assert hi - lo < 0.004, (lo, hi)                            # no plateaus: panels at the same level
+
+
 def test_seestar_pull_syncs_subs_by_night(tmp_path):
     """A Seestar's MyWorks (USB drive or \\\\seestar share): every <target>_sub/*.fit
     the archive hasn't got is copied to <root>/<night>/<target>/; JPEGs,
@@ -271,19 +305,19 @@ def test_seestar_pull_syncs_subs_by_night(tmp_path):
     assert ss._seestar_myworks(str(mw)) == str(mw)
     root = tmp_path / "archive"
     copied, skipped, nights = ss.pull_seestar(str(mw), str(root), log)
-    assert (copied, skipped) == (4, 0) and nights == {"2026-09-22", "2026-09-19"}
+    assert (copied, skipped) == (5, 0) and nights == {"2026-09-22", "2026-09-19"}
     assert sorted(p.name for p in (root / "2026-09-22" / "NGC 7000").iterdir()) == [
         "Light_NGC 7000_10.0s_LP_20260922-203537.fit", "Light_NGC 7000_10.0s_LP_20260922-203551.fit"]
     assert len(list((root / "2026-09-19" / "M 31").iterdir())) == 2
-    assert not (root / "2026-09-19" / "M 31_mosaic").exists()
+    assert (root / "2026-09-19" / "M 31_mosaic").exists()          # mosaics come too: the owl tiles them
     assert not any("Lunar" in p.name for p in root.rglob("*"))
     assert not list(root.rglob("*.jpg")) and not list(root.rglob("Stacked_*"))
     copied, skipped, _ = ss.pull_seestar(str(mw), str(root), log)
-    assert (copied, skipped) == (0, 4)
+    assert (copied, skipped) == (0, 5)
     copied, _, _ = ss.pull_seestar(str(mw), str(root), log, target="ngc")
     assert copied == 0
     # the archive is a whole-night tree the owl already understands
-    assert sorted(os.path.basename(x) for x in ss.find_sessions(str(root))) == ["M 31", "NGC 7000"]
+    assert sorted(os.path.basename(x) for x in ss.find_sessions(str(root))) == ["M 31", "M 31_mosaic", "NGC 7000"]
 
 
 def test_scopepull_archive_layout(tmp_path):

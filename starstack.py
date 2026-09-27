@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.19"
+__version__ = "0.2.20"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -639,7 +639,7 @@ def run_scopepull(folder, target, log):
 
 SEESTAR_SHARE = "EMMC Images"
 SEESTAR_HOSTS = ("seestar", "seestar.local")
-SEESTAR_SKIP = ("_mosaic", "lunar_", "solar_", "_video")
+SEESTAR_SKIP = ("lunar_", "solar_", "_video")       # mosaics are pulled: the owl tiles them
 
 
 def seestar_archive_root() -> str:
@@ -752,7 +752,7 @@ def pull_seestar(myworks: str, root: str, log=print, target=None) -> tuple:
         tname = d[:-4]
         low = tname.lower()
         if any(k in low for k in SEESTAR_SKIP):
-            log(f"  {tname}: skipped ({'mosaic panels' if '_mosaic' in low else 'not a deep-sky stack'})")
+            log(f"  {tname}: skipped (not a deep-sky stack)")
             continue
         if target and target.lower() not in low:
             continue
@@ -917,6 +917,9 @@ def main(argv=None):
     p.add_argument("--no-align", action="store_true", help="skip star registration")
     p.add_argument("--no-normalize", action="store_true", help="skip level matching")
     p.add_argument("--ref", type=int, default=None, help="reference frame index (default: auto)")
+    p.add_argument("--mosaic", choices=["auto", "on", "off"], default="auto",
+                   help="tile frames that don't share one field (Seestar framing mode) onto one canvas. "
+                        "auto: when the folder is named *_mosaic or the headers say the pointing wandered")
     p.add_argument("--darks", default=None,
                    help="folder or glob of dark frames (default: any file with 'dark' in its name)")
     p.add_argument("--no-darks", action="store_true", help="ignore dark frames entirely")
@@ -1581,6 +1584,49 @@ def run(args):
     ref_scale = float(np.median(np.abs(rl - ref_med))) + 1e-9
     out_shape = ref_img.shape
 
+    # ---- mosaic? ------------------------------------------------------------
+    mosaic_mode = args.mosaic == "on"
+    mo = None
+    if args.mosaic == "auto" and not args.no_align and len(usable) >= 3:
+        import mosaic as mo
+        pts = [mo.read_pointing(f.path) for f in usable[:: max(1, len(usable) // 40)]]
+        pts = [p_ for p_ in pts if p_]
+        offs = mo.sky_offsets(pts) if len(pts) >= 3 else None
+        scale_ = next((p_[2] for p_ in pts if p_[2]), None)
+        mosaic_mode = mo.looks_like_mosaic(args.folder, offs, scale_, ref_img.shape[:2])
+    if mosaic_mode:
+        import mosaic as mo
+        # the reference should sit near the middle of the field, not at an edge:
+        # everything is placed outward from it
+        pts_all = [mo.read_pointing(f.path) for f in usable]
+        if sum(p_ is not None for p_ in pts_all) >= 3:
+            offs = mo.sky_offsets([p_ for p_ in pts_all if p_])
+            idx = [i for i, p_ in enumerate(pts_all) if p_]
+            d = np.linalg.norm(offs, axis=1)
+            near = sorted(range(len(idx)), key=lambda k: d[k])[: max(3, len(idx) // 10)]
+            best_c, best_cn, best_cimg = None, -1, None
+            for k in near[:8]:
+                try:
+                    img_ = load_prepared(usable[idx[k]])
+                    n_ = star_count(luminance(img_))
+                except Exception:
+                    continue
+                if n_ > best_cn:
+                    best_c, best_cn, best_cimg = usable[idx[k]], n_, img_
+            if best_c is not None and best_c is not ref_frame:
+                ref_frame, ref_img = best_c, best_cimg
+                ref_lum = luminance(ref_img)
+                rl = ref_lum[np.isfinite(ref_lum)]
+                ref_med = float(np.median(rl)); ref_scale = float(np.median(np.abs(rl - ref_med))) + 1e-9
+                log(f"reference for the mosaic: {os.path.basename(ref_frame.path)} ({best_cn} stars), "
+                    f"the frame nearest the middle of the field.")
+        stacked, coverage, kept = mo.mosaic_stack(usable, ref_frame, ref_img, master_dark, pattern, args, log)
+        mm = None
+        tmpdir = None
+        n_final = kept
+        stacked = np.nan_to_num(stacked, nan=0.0)
+        return _finish(args, log, t0, frames, stacked, coverage, kept, exposure_s, session, mm, tmpdir)
+
     # ---- pass 2: register into a memmapped cube -----------------------------
     align = not args.no_align
     if align:
@@ -1705,7 +1751,11 @@ def run(args):
     kept = n_final
 
     stacked = np.nan_to_num(stacked, nan=0.0)
+    return _finish(args, log, t0, frames, stacked, coverage, kept, exposure_s, session, mm, tmpdir)
 
+
+def _finish(args, log, t0, frames, stacked, coverage, kept, exposure_s, session, mm, tmpdir):
+    """Write the stack, the preview, the report; the same tail for a field and a mosaic."""
     # ---- write --------------------------------------------------------------
     log(f"writing {args.out}")
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)   # -o into a folder that isn't there yet
@@ -1744,7 +1794,7 @@ def run(args):
         prev = (np.clip(autostretch(stacked), 0, 1) * 255).astype(np.uint8)
         Image.fromarray(prev).save(args.preview)
 
-    if mm is not None:
+    if mm is not None and tmpdir:
         del mm
         try:
             os.remove(os.path.join(tmpdir, "cube.npy"))

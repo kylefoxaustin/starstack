@@ -206,10 +206,10 @@ address with `=` so a folder after it isn't taken for the address. In the
 window it's the **Seestar** row: tick it, leave *at* empty unless the owl
 can't find the scope on its own, press the button.)
 
-What it copies: the `.fit` subs, and only those. The JPEGs and thumbnails
-next to them, the scope's own `Stacked_*.fit`, `Lunar_*` and `*_video`
-folders, and `*_mosaic` panels (different fields of sky; a stack of them is
-soup) all stay on the scope. A sub taken before noon belongs to the evening
+What it copies: the `.fit` subs, and only those -- framing-mode
+(`*_mosaic`) sessions included, since the owl tiles those (next section).
+The JPEGs and thumbnails next to them, the scope's own `Stacked_*.fit`, and
+the `Lunar_*` and `*_video` folders stay on the scope. A sub taken before noon belongs to the evening
 before, so a session that runs past midnight is one night, not two. A second
 pull copies nothing and says so; a pull that finds nothing new still stacks
 the archive, which the already-stacked rule turns into "nothing to do".
@@ -232,6 +232,46 @@ a current Windows makes. The owl does the remaining step itself (the guest
 login to the scope that `net use \\seestar\IPC$ /user:guest` would do by
 hand), so after those two lines the Seestar row just works. USB needs
 none of this.
+
+## Mosaics: frames that don't share a field
+
+A Seestar in framing mode doesn't shoot one field, it walks one: every sub
+is a full frame at a slightly different pointing, panels overlap their
+neighbours by a fifth or so, and the far panels don't overlap each other at
+all. A normal stack of that crops everything to the first frame and throws
+the rest away. So the owl tiles instead, on its own, whenever the folder is
+called `*_mosaic` or the headers show the pointing wandered more than a
+third of a frame (`--mosaic on|off` to insist).
+
+How: the FITS headers say where each frame pointed (`RA`/`DEC`) and how big
+a pixel is (`XPIXSZ`/`FOCALLEN`), but not which way the camera was turned.
+So the frame nearest the middle of the field goes down first, its
+neighbours are matched to it star for star, and from those placements the
+camera's orientation is fitted -- the log says "camera turned 32.5 deg and
+mirrored relative to north-up". After that every frame is predicted onto
+the canvas from its header, matched against the mosaic-so-far at that spot,
+and placed where the stars say. Field rotation on an alt-az mount comes out
+in the per-frame match. Levels: one camera, one gain, so a frame is only
+ever shifted, per channel, to agree with the mosaic where the two overlap --
+a panel full of nebula keeps its nebula.
+
+Combining is done in passes rather than a scratch cube (a 3-hour session on
+a 65-megapixel canvas would be hundreds of gigabytes): pass 1 places the
+frames and gathers each pixel's mean and spread, passes 2 and 3 re-warp
+every frame and keep the pixels within sigma of the mosaic, weighted like
+the normal stacker. The accumulators live on disk, a few gigabytes for a big
+night; if the scratch folder hasn't the room the owl keeps the plain mean
+and says so. The quality pass, the report and the preview work as usual;
+`coverage` in the summary runs from 1 at the edges to the full count in the
+overlaps. Output is one TIFF the size of the field, so a big mosaic is a
+big file (a 3.5-hour S50 Pro walk is about 8500 x 7600 px, 400 MB at 16
+bits).
+
+Verified on a synthetic walk (five panels, visited three times, camera at
+37 deg and mirrored, 6 deg of field rotation): all 30 frames placed, and
+the result matches the field they were cut from to the per-frame noise,
+with no level steps at the seams. Frames without `RA`/`DEC` can't be
+placed and are left out with a note.
 
 ## Sorted folders, and sorting one
 
@@ -462,6 +502,7 @@ takes out.
 | `--sort` / `--sort --dry-run` | sort a one-pile folder into lights/ darks/ ... and stop |
 | `--pull` / `--pull-target TEXT` | fetch new observations off the scope with scopepull first, then stack the archive |
 | `--restack` | whole-night mode: redo sessions whose output already exists and is up to date |
+| `--mosaic auto\|on\|off` | tile frames that don't share one field onto one canvas (default auto: `*_mosaic` folders, or wandering headers) |
 | `--pull-seestar[=WHERE]` | copy new subs off a Seestar (USB drive, `\\seestar`, a host/IP or a folder) into `~/Astro/seestar`, then stack |
 | `--scratch DIR` | where the temporary cube goes (default: system temp) |
 | `--no-log` | don't write the .log next to the output |

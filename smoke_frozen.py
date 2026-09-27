@@ -81,5 +81,18 @@ with tempfile.TemporaryDirectory() as td:
     print(r.stdout[-2500:])
     ok = (r.returncode == 0 and os.path.exists(out) and "debayering as RGGB" in r.stdout
           and "Pixels win" in r.stdout)
-    print("FROZEN SMOKE:", "OK" if ok else f"FAILED (exit {r.returncode})")
-    sys.exit(0 if ok else 1)
+    print("FROZEN SMOKE (field):", "OK" if ok else f"FAILED (exit {r.returncode})")
+
+    # and a mosaic: the tiling path, astroalign against a canvas crop, and the
+    # worker pool re-warping frames -- all inside the exe, spawn-style processes.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests"))
+    from mosaic_synth import make_session
+    mo = pathlib.Path(td) / "NGC 7000_mosaic"
+    make_session(str(mo), visits=1, per_visit=2, panels=((0, 0), (1, 0), (0, 1)))
+    out2 = os.path.join(td, "mosaic.tif")
+    r2 = subprocess.run([exe, "--cli", str(mo), "-o", out2, "--no-log", "-j", "2"],
+                        capture_output=True, text=True, errors="replace", timeout=900)
+    print(r2.stdout[-1500:])
+    ok2 = r2.returncode == 0 and os.path.exists(out2) and "placed all 6" in r2.stdout
+    print("FROZEN SMOKE (mosaic):", "OK" if ok2 else f"FAILED (exit {r2.returncode})")
+    sys.exit(0 if ok and ok2 else 1)
