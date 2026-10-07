@@ -8,22 +8,43 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
 </p>
 
-Dump a folder of frames in. Push one button. Get a stacked image out.
+**Gets the night off your scope.** Tick your scope, press the button, and
+the night's sub-frames land in an archive on your computer, sorted by night
+and target. Pick a night -- or every night you've ever spent on one target --
+and hand it to a stacker with the next button. The owl sits between your
+smart scope and your stacker, and does the part neither of them does.
+
+- **Seestar S50 / S50 Pro**: over Wi-Fi (station mode) or USB. Nothing to
+  install; the scope is a folder and the owl copies what's new.
+- **Unistellar Odyssey Pro**: through its download API, with
+  [scopepull](https://github.com/kylefoxaustin/scopepull) (the owl installs it).
+- **The archive**: `~/Astro/seestar/<night>/<target>/`, same for the
+  Odyssey. The window lists it as a table: target, nights, frames, hours of
+  sky, what's new tonight.
+- **Combine nights**: pick a target and every night of it is gathered into
+  one folder (hard links, no copies, no disk) ready for a stacker.
+- **Hand it over**: *Open in StackingWizard* launches
+  [StackingWizard](https://astrowizard.lukomatico.com/stackingwizard.html)
+  on that folder. It's the stacker this owl recommends: mosaics with
+  distortion correction, multi-night, flats, mono filters, a gold button
+  straight into AstroWizard for the finishing. Free, and it's a better
+  stacker than the owl will ever be.
+
+The owl can still stack. Tick *quick-look stack after the pull* and it
+registers, grades and sigma-clips the night into a 16-bit TIFF with a
+stretched preview, mosaics included, so you know before bed whether the
+night was any good. For a plain folder of frames with no scope involved it's
+still the one-button stacker it started as:
 
 ```
 pip install -r requirements.txt
 python starstack.py /path/to/frames -o result.tif --preview look.png
 ```
 
-That's it. That's the workflow. No sequence files, no process folder, no
-"register first, then stack", no state left on disk, no forum thread.
-
-Don't like terminals? **Drag the folder onto `STACK.bat`.** That's the
-whole button. (Or double-click it and pick a folder; `stack.sh` on
-Linux/macOS.) A window opens, the owl narrates, the picture shows up when
-it's done. Run `Put owl on Desktop.bat` once and you get a proper Desktop
-shortcut with the owl as its icon -- double-click to open, drag a folder
-onto it to stack.
+**The window**: download `starstack-<version>-windows.exe` from
+[Releases](https://github.com/kylefoxaustin/starstack/releases) (one file,
+nothing to install; see *Install* for the blue box Windows shows), or
+`python button.py`. Drag a folder onto the exe to stack it straight away.
 
 <p align="center">
   <img src="docs/m81_example.png" alt="M81 stacked with starstack from 710 Unistellar Odyssey Pro frames" width="820">
@@ -33,21 +54,39 @@ onto it to stack.
 Texas skies. starstack was pointed at the session folder exactly as the scope
 exported it: dark applied, Bayer mosaic detected, 695 frames aligned and
 sigma-clipped, the rest rejected. The linear stack was then stretched and
-finished in AstroWizards.*
+finished in AstroWizard.*
 
 ## Why this exists
 
-Stacking has to be hard for exactly one reason: every frame is shifted and
-rotated against every other one, and somebody has to work out how. That part
-is real. Everything else that makes stacking miserable is tooling. Every
-program has its own idea of what a "sub" looks like, guesses from metadata,
-and guesses wrong. Siril wants a sequence file, then dies with `input images
-have different sizes` because the scope dropped its own finished stack into
-the same folder. Another stacker sees 32-bit float and decides the frames are
-already done. None of that is the data's fault.
+It started as a stacker, written by someone who got grumpy one evening at
+sequence files, process folders and `input images have different sizes`.
+That stacker is still in here and still has one button. But the part that
+turned out to matter most was the part before stacking: getting the night
+off the scope at all. A Seestar hides its subs behind a network share that
+current Windows refuses to open; an Odyssey hands out one zip per
+observation through a portal. Then the frames sit in a dozen folders named
+by timestamp and nobody can tell which nights were NGC 7000. Meanwhile a
+dedicated stacker like StackingWizard ships a release a week and does
+things -- field distortion, flats, mono filter sets -- this owl will never
+do.
 
-This tool was written by someone who got grumpy about all of the above one
-evening. It reads what is there and gets on with it.
+So the owl does the unglamorous half: fetch, file, count, combine, hand
+over. Stack too, if you ask, and it's quick.
+
+## What a night looks like
+
+Tick **Seestar** (or **Odyssey**), press **PULL**. The log says what came
+down ("NGC 7000_mosaic: 602 new subs of 602"), the table underneath gains a
+green row, and the status line says how much sky the archive now holds.
+Pick that row and press **Open in StackingWizard**: the folder opens there
+(and in Explorer, and its path is on the clipboard, because StackingWizard
+takes a folder by picker or drag-and-drop). Pick the *target* row instead --
+"NGC 7000, 3 nights" -- and the button reads **Combine 3 nights →
+StackingWizard**: every sub of every night is gathered into
+`combined/NGC 7000/` as hard links and handed over as one long session.
+Tick *quick-look stack after the pull* and the button reads **PULL+STACK**:
+the owl stacks the archive itself after pulling, skipping nights it has
+already done, and the preview appears on the right.
 
 <img src="docs/owl_256.png" align="right" width="150" alt="the owl">
 
@@ -103,8 +142,15 @@ evening. It reads what is there and gets on with it.
   (`--pull`, via scopepull and the scope's download API) or a ZWO Seestar
   S50 / S50 Pro (`--pull-seestar`: the scope is a folder on USB or a share
   on Wi-Fi, so it's a copy). Either way: new frames into an archive split by
-  night, then the archive stacked, then the already-stacked rule keeps the
-  next night cheap. In the window each is one row and one tick.
+  night. `--pull-only` stops there; without it the archive is stacked and
+  the already-stacked rule keeps the next night cheap. In the window each
+  scope is one row and one tick, and stacking is the *quick-look* checkbox.
+- **Keeps the archive honest.** `--index ROOT` lists every session (target,
+  night, frames, exposure, integration, when it was pulled) as JSON; the
+  window shows the same as a table. `--combine TARGET` (folder = the archive
+  root; `--nights N1,N2` to pick) gathers every night of a target into
+  `combined/TARGET/` as hard links, so a stacker sees one long session and
+  the nights themselves are untouched.
 
 ## Whole-night mode
 
@@ -332,10 +378,24 @@ scopepull pull: M81 - Bode's Galaxy  710 x 4.0s, gain 20, IMX415.  The scope its
 
 ## The button
 
-`button.py` is the Big Red Button as a window: folder picker, STACK,
-live log, picture. It runs `starstack.py` underneath, so the CLI stays the
-source of truth and the window is just a face. Nothing to install beyond
-Python's own tkinter. It knows the difference between one session and a
+`button.py` is the Big Red Button as a window, one screen: the scope rows,
+the button, the log, the archive table, the picture, and a footer that hands
+a night to a stacker. It runs `starstack.py` underneath, so the CLI stays
+the source of truth and the window is just a face. Nothing to install
+beyond Python's own tkinter.
+
+The button reads **PULL** when a scope row is ticked, **PULL+STACK** when
+the *quick-look stack after the pull* box is ticked too, and **STACK** when
+no scope is ticked and the Folder row points at frames. The **archive
+table** shows the selected scope's archive (or the Folder row's, if it's a
+folder of nights): one bold row per target with its nights, frames, hours of
+sky, and when each night was pulled; tonight's rows are green. Pick a night
+and **Open in StackingWizard** / **Open folder** come alive; pick a target
+with several nights and the green button becomes **Combine N nights →
+StackingWizard**. The owl finds StackingWizard on its own (Downloads, the
+Desktop, Program Files); if it can't, it asks once and remembers.
+
+When it does stack, it knows the difference between one session and a
 whole night, names outputs after the target, and writes into a `stacked/`
 (one session) or `stacks/` (whole night) folder next to your frames -- or
 into any folder you pick in the Output row, which it remembers. The log
@@ -503,6 +563,9 @@ takes out.
 | `--pull` / `--pull-target TEXT` | fetch new observations off the scope with scopepull first, then stack the archive |
 | `--restack` | whole-night mode: redo sessions whose output already exists and is up to date |
 | `--mosaic auto\|on\|off` | tile frames that don't share one field onto one canvas (default auto: `*_mosaic` folders, or wandering headers) |
+| `--pull-only` | with a pull: fetch, list the archive, stop. No stacking |
+| `--index ROOT` | list the archive as JSON lines (the window's table) |
+| `--combine TARGET` / `--nights N1,N2` | gather a target's nights into `<root>/combined/TARGET` (hard links) |
 | `--pull-seestar[=WHERE]` | copy new subs off a Seestar (USB drive, `\\seestar`, a host/IP or a folder) into `~/Astro/seestar`, then stack |
 | `--scratch DIR` | where the temporary cube goes (default: system temp) |
 | `--no-log` | don't write the .log next to the output |

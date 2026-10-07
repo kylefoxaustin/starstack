@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import warnings
 
-__version__ = "0.2.20"
+__version__ = "0.3.0"
 
 warnings.filterwarnings("ignore")   # astropy is chatty about slightly-off FITS headers
 
@@ -799,7 +799,7 @@ def pull_seestar(myworks: str, root: str, log=print, target=None) -> tuple:
     return copied, skipped, nights
 
 
-def run_seestar_pull(spec, folder, target, log):
+def run_seestar_pull(spec, folder, target, log, then="Stacking the archive."):
     """The --pull-seestar step: find the scope, sync its subs into the archive,
     return the archive folder to stack (or None)."""
     root = folder or seestar_archive_root()
@@ -814,10 +814,132 @@ def run_seestar_pull(spec, folder, target, log):
     os.makedirs(root, exist_ok=True)
     copied, skipped, nights = pull_seestar(myworks, root, log, target)
     if copied:
-        log(f"pulled {copied} new sub{'s' if copied != 1 else ''} ({skipped} already had). Stacking the archive.")
+        log(f"pulled {copied} new sub{'s' if copied != 1 else ''} ({skipped} already had). {then}")
     else:
-        log(f"nothing new on the scope ({skipped} subs already in the archive). Stacking what's there.")
+        log(f"nothing new on the scope ({skipped} subs already in the archive)."
+            + (" Stacking what's there." if then.startswith("Stacking") else ""))
     return root
+
+
+# ---- the archive: what's been pulled, by target and night ------------------
+#
+# Both pulls land in <root>/<night>/<session>/ (Seestar: <target>/, scopepull:
+# <target>__<id>/frames/). The button shows that as a table and hands any of
+# it to a stacker -- the owl's own quick look, or StackingWizard.
+
+ARCHIVE_SKIP = ("stacks", "combined", "_incoming")
+
+
+def _session_frames(folder: str) -> list:
+    """The frames of one session, FITS preferred over TIFF twins."""
+    lay = layout_dirs(folder)
+    d = lay.get("light", folder) if lay else folder
+    try:
+        paths = sorted(os.path.join(d, f) for f in os.listdir(d)
+                       if os.path.splitext(f)[1].lower() in IMAGE_EXT)
+    except OSError:
+        return []
+    paths, _ = prefer_fits(paths)
+    skip = ("preview", "thumb", "_thn", "stacksum", "stacked", "master", "final")
+    return [p for p in paths if not any(w in os.path.basename(p).lower() for w in skip)
+            and os.path.splitext(p)[1].lower() not in (".jpg", ".jpeg", ".png")]
+
+
+def _session_exposure(folder: str, frames: list) -> float:
+    mf = read_manifest(folder)
+    if mf.get("expo"):
+        try:
+            return float(mf["expo"]) / 1e6
+        except (TypeError, ValueError):
+            pass
+    for p in frames[:1]:
+        if os.path.splitext(p)[1].lower() in FITS_EXT:
+            try:
+                from astropy.io import fits as _fits
+                h = _fits.getheader(p)
+                return float(h.get("EXPTIME") or h.get("EXPOSURE") or 0)
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def archive_index(root: str) -> list:
+    """One dict per session: night, target, folder, frames, exposure_s,
+    integration_s, pulled_at (newest frame mtime), stacked (an owl stack of
+    it exists in <root>/stacks). Newest night first."""
+    out = []
+    if not os.path.isdir(root):
+        return out
+    nights = sorted((d for d in os.listdir(root)
+                     if os.path.isdir(os.path.join(root, d)) and d.lower() not in ARCHIVE_SKIP), reverse=True)
+    stacks = os.path.join(root, "stacks")
+    for night in nights:
+        nd = os.path.join(root, night)
+        sessions = find_sessions(nd, _deeper=False)
+        if not sessions and _has_images(nd):
+            sessions = [nd]                      # a plain folder of frames dropped into the archive
+        for sess in sessions:
+            frames = _session_frames(sess)
+            if not frames:
+                continue
+            target = session_name(sess)
+            expo = _session_exposure(sess, frames)
+            try:
+                pulled = max(os.path.getmtime(p) for p in frames)
+            except OSError:
+                pulled = 0.0
+            stack = os.path.join(stacks, target + ".tif")
+            out.append({"night": night, "target": target, "folder": sess, "frames": len(frames),
+                        "exposure_s": expo, "integration_s": expo * len(frames), "pulled_at": pulled,
+                        "stacked": os.path.exists(stack), "mosaic": "mosaic" in os.path.basename(sess).lower()})
+    return out
+
+
+def combine_target(root: str, target: str, nights=None, log=print) -> str | None:
+    """Every frame of one target across its nights, in <root>/combined/<target>/,
+    as hard links (no copies, no disk) with a copy as the fallback. A stacker
+    pointed at that folder sees one long session. Returns the folder."""
+    import shutil
+    rows = [r for r in archive_index(root) if r["target"] == target and (not nights or r["night"] in nights)]
+    if not rows:
+        log(f"no sessions of {target!r} in {root}.")
+        return None
+    dest = os.path.join(root, "combined", target)
+    os.makedirs(dest, exist_ok=True)
+    have = set(os.listdir(dest))
+    linked = copied = kept = 0
+    for r in sorted(rows, key=lambda r_: r_["night"]):
+        for p in _session_frames(r["folder"]):
+            name = os.path.basename(p)
+            if name in have:                     # same filename from another night? (Odyssey can) -> prefix it
+                if os.path.exists(os.path.join(dest, name)) and os.path.getsize(os.path.join(dest, name)) == os.path.getsize(p):
+                    kept += 1; continue
+                name = f"{r['night']}_{name}"
+                if name in have:
+                    kept += 1; continue
+            d = os.path.join(dest, name)
+            try:
+                os.link(p, d); linked += 1
+            except OSError:
+                try:
+                    shutil.copyfile(p, d); copied += 1
+                except OSError as e:
+                    log(f"  {name}: {e}"); continue
+            have.add(name)
+    nights_s = ", ".join(sorted({r["night"] for r in rows}))
+    total = sum(r["integration_s"] for r in rows)
+    mins = int(total // 60)
+    log(f"combined {target}: {len(rows)} night{'s' if len(rows) != 1 else ''} ({nights_s}), "
+        f"{sum(r['frames'] for r in rows)} frames, {mins // 60}h {mins % 60:02d}m  ->  {dest}")
+    if linked:
+        log(f"  {linked} hard links (no extra disk)" + (f", {copied} copied" if copied else "")
+            + (f", {kept} already there" if kept else "") + ".")
+    elif copied:
+        log(f"  {copied} copied (the archive isn't on a drive that can hard-link; this costs disk)"
+            + (f", {kept} already there" if kept else "") + ".")
+    elif kept:
+        log(f"  all {kept} already there.")
+    return dest
 
 
 def relay(cmd, log) -> int:
@@ -907,6 +1029,15 @@ def main(argv=None):
                         "Write it --pull-seestar=WHERE so a folder after it isn't mistaken for WHERE.")
     p.add_argument("--find-seestar", nargs="?", const="", default=None, metavar="WHERE",
                    help="just say where the Seestar is (or isn't) and exit; the button uses this")
+    p.add_argument("--pull-only", action="store_true",
+                   help="with --pull / --pull-seestar: fetch, list what the archive holds, and stop. No stacking.")
+    p.add_argument("--index", default=None, metavar="ROOT",
+                   help="print the archive at ROOT as JSON lines (target, night, frames, integration) and exit")
+    p.add_argument("--combine", default=None, metavar="TARGET",
+                   help="gather every night of TARGET from the archive (folder = the archive root) into "
+                        "<root>/combined/TARGET as hard links, print the path, and exit")
+    p.add_argument("--nights", default=None, metavar="N1,N2",
+                   help="with --combine: only these nights")
     p.add_argument("-o", "--out", default="stacked.tif",
                    help="output file; .tif/.tiff or .fit/.fits (default: stacked.tif)")
     p.add_argument("--method", choices=["sigma", "mean", "median"], default="sigma")
@@ -969,11 +1100,32 @@ def main(argv=None):
         mw, how = find_seestar(args.find_seestar, log=lambda *a, **k: None)
         print(f"found {how}\n{mw}" if mw else f"none: {how}")
         return 0 if mw else 3
+    if args.index is not None:
+        import json as _json
+        for row in archive_index(os.path.expanduser(args.index)):
+            print(_json.dumps(row))
+        return 0
+    if args.combine is not None:
+        root = args.folder or seestar_archive_root()
+        nights = [n.strip() for n in args.nights.split(",")] if args.nights else None
+        dest = combine_target(os.path.expanduser(root), args.combine, nights, log)
+        if dest:
+            print(f"combined: {dest}")
+        return 0 if dest else 2
     if args.pull_seestar is not None:
-        dest = run_seestar_pull(args.pull_seestar, args.folder, args.pull_target, log)
+        dest = run_seestar_pull(args.pull_seestar, args.folder, args.pull_target, log,
+                                then="" if args.pull_only else "Stacking the archive.")
         if dest is None:
             return 3
         args.folder = dest
+    if args.pull_only and (args.pull or args.pull_seestar is not None):
+        rows = archive_index(args.folder)
+        nights = sorted({r["night"] for r in rows})
+        total = sum(r["integration_s"] for r in rows)
+        log(f"the archive: {len(rows)} session{'s' if len(rows) != 1 else ''} over {len(nights)} night"
+            f"{'s' if len(nights) != 1 else ''}, {int(total // 3600)}h {int(total % 3600 // 60):02d}m of sky. "
+            f"Pick one and hand it to a stacker. Go to bed.")
+        return 0
     if args.folder is None:
         p.error("a folder is required (or use --pull to fetch from the scope first)")
 

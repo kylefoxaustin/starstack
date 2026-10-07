@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "starstack"
-version = "0.2.20"
-description = "Dump a folder of frames in. Push one button. Get a stacked astro image out."
+version = "0.3.0"
+description = "Gets the night off your smart scope: pull, file by night and target, combine nights, hand to a stacker. Stacks too."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Kyle Fox" }]

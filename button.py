@@ -289,8 +289,10 @@ DEFAULTS = {
     "scratch": "",         # "" = system temp; the 10+ GB cube goes here
     "pull": False,         # fetch new observations off an Odyssey Pro (scopepull) before stacking
     "restack": False,      # redo sessions that already have a stack (one run, then off)
-    "pull_seestar": False, # copy new subs off a Seestar (S50 / S50 Pro) before stacking
+    "pull_seestar": False, # copy new subs off a Seestar (S50 / S50 Pro)
     "seestar_at": "",      # "" = look (USB drive, then \\seestar); else a drive, folder, UNC path or host/IP
+    "quick_look": False,   # after a pull, also stack the archive with the owl (fast, rough)
+    "stackingwizard": "",  # path to StackingWizard.exe; "" = look in the usual places
     "pull_target": "",     # with pull: only observations whose target matches this
 }
 LABELS = {  # what the main window says when something is off-default
@@ -312,6 +314,8 @@ LABELS = {  # what the main window says when something is off-default
     "restack": lambda v: "redo already-stacked sessions" if v else None,
     "pull_seestar": lambda v: None,     # its own row
     "seestar_at": lambda v: None,
+    "quick_look": lambda v: None,       # its own checkbox
+    "stackingwizard": lambda v: None,
 }
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".starstack.json")
 SEESTAR_ROOT = os.path.join(os.path.expanduser("~"), "Astro", "seestar")    # starstack.seestar_archive_root()
@@ -480,6 +484,28 @@ def latest_starstack():
         return None
 
 
+def find_stackingwizard(configured=""):
+    """StackingWizard is a portable exe people keep in Downloads or on the
+    Desktop. The configured path first; then the usual folders, newest file wins."""
+    import glob
+    if configured and os.path.exists(configured):
+        return configured
+    home = os.path.expanduser("~")
+    places = [os.path.join(home, "Downloads"), os.path.join(home, "Desktop"), os.path.join(home, "Documents"),
+              os.path.join(home, "Astro"), os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", ""),
+              os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")]
+    hits = []
+    for d in places:
+        if d and os.path.isdir(d):
+            for pat in ("StackingWizard*.exe", "*/StackingWizard*.exe", "stackingwizard*", "*/stackingwizard*"):
+                hits += [h for h in glob.glob(os.path.join(d, pat))
+                         if os.path.isfile(h) and (h.lower().endswith(".exe") or not sys.platform.startswith("win"))]
+    hits = [h for h in hits if "uninstall" not in os.path.basename(h).lower()]
+    if not hits:
+        return None
+    return max(hits, key=lambda h: os.path.getmtime(h))
+
+
 def starstack_version():
     """__version__ out of starstack.py without importing numpy and friends."""
     import re
@@ -640,13 +666,15 @@ class App(tk.Tk):
         self.title("starstack")
         self.configure(bg=NAVY)
         self._set_icon()
-        self.geometry("880x760")
-        self.minsize(720, 600)
+        self.geometry("960x800")
+        self.minsize(760, 620)
         self.proc = None
         self.paused = False
         self.q = queue.Queue()
         self.preview_path = None
         self.out_dir = None
+        self._pulled_this_run = False
+        self._stacked_this_run = True
         self.settings = load_settings()
         self.job = make_job()                    # dies with us; takes every child along
         self._build()
@@ -692,7 +720,7 @@ class App(tk.Tk):
         self.set_face("grumpy")
         words = tk.Frame(top, bg=NAVY); words.pack(side="left", fill="x", expand=True)
         tk.Label(words, text="starstack", fg=CREAM, bg=NAVY, font=(SANS[0], 30, "bold")).pack(anchor="w")
-        tk.Label(words, text="Stacking for people who'd rather be looking up.", fg="#c9cfe0", bg=NAVY, font=SANS).pack(anchor="w")
+        tk.Label(words, text="Gets the night off your scope.", fg="#c9cfe0", bg=NAVY, font=SANS).pack(anchor="w")
         # the version, where people look when they wonder if they're current.
         # turns into the update notice when they aren't.
         self.ver_lbl = tk.Label(words, text=f"v{starstack_version()}", fg=MUTE, bg=NAVY, font=(SANS[0], 9), cursor="arrow")
@@ -705,7 +733,7 @@ class App(tk.Tk):
         row = tk.Frame(self, bg=NAVY); row.pack(fill="x", padx=18, pady=(4, 8))
         tk.Label(row, text="Folder", fg=MUTE, bg=NAVY, font=SANS).pack(side="left", padx=(0, 8))
         self.folder = tk.StringVar()
-        self.folder.trace_add("write", lambda *_: self._describe())
+        self.folder.trace_add("write", lambda *_: (self._describe(), self._folder_reindex()))
         self.folder_entry = tk.Entry(row, textvariable=self.folder, bg=NAVY2, fg=CREAM, insertbackground=CREAM,
                                      relief="flat", font=MONO)
         self.folder_entry.pack(side="left", fill="x", expand=True, ipady=6)
@@ -794,13 +822,21 @@ class App(tk.Tk):
         # the whole log to the clipboard, for pasting at whoever is helping you
         tk.Button(opts, text="Copy log", command=self.copy_log, bg=NAVY2, fg="#c9cfe0",
                   activebackground="#22304a", activeforeground=CREAM, relief="flat", padx=10, font=SANS).pack(side="right")
+        # the owl's own stack is the quick look; a real stacker is the next step
+        self.quick_var = tk.BooleanVar(value=bool(self.settings.get("quick_look")))
+        self.quick_chk = tk.Checkbutton(opts, text="quick-look stack after the pull (the owl's own, fast and rough)",
+                                        variable=self.quick_var, bg=NAVY, fg="#c9cfe0", selectcolor=NAVY2,
+                                        activebackground=NAVY, activeforeground=CREAM, font=(SANS[0], 10),
+                                        highlightthickness=0, bd=0, command=self._quick_changed)
+        self.quick_chk.pack(side="right", padx=(0, 14))
 
+        foot = tk.Frame(self, bg=NAVY); foot.pack(side="bottom", fill="x", padx=18, pady=(0, 12))
         body = tk.PanedWindow(self, orient="vertical", bg=NAVY, sashwidth=6, sashrelief="flat")
         body.pack(fill="both", expand=True, padx=18, pady=(6, 10))
         logbox = tk.Frame(body, bg=INK)
         self.log = tk.Text(logbox, bg=INK, fg="#d5dae6", insertbackground=CREAM, relief="flat",
                            font=MONO, wrap="word", state="disabled", padx=10, pady=8,
-                           cursor="arrow", takefocus=1)
+                           cursor="arrow", takefocus=1, height=6)
         sb = tk.Scrollbar(logbox, orient="vertical", command=self.log.yview,
                           bg=NAVY2, troughcolor=INK, activebackground="#22304a", relief="flat", width=14)
         self.log.configure(yscrollcommand=sb.set)
@@ -826,31 +862,79 @@ class App(tk.Tk):
             self.bind_all(key, _nav(action))
         self.log.bind("<Button-1>", lambda e: self.log.focus_set())
         body.add(logbox, minsize=90)
-        self.preview_frame = tk.Frame(body, bg=INK)
+        # below the log: the archive on the left (what's been pulled, by target and
+        # night), the quick-look picture on the right
+        lower = tk.PanedWindow(body, orient="horizontal", bg=NAVY, sashwidth=6, sashrelief="flat")
+        from tkinter import ttk
+        st = ttk.Style(self)
+        try:
+            st.theme_use("clam")
+        except tk.TclError:
+            pass
+        st.configure("Owl.Treeview", background=INK, fieldbackground=INK, foreground="#d5dae6",
+                     rowheight=22, font=(SANS[0], 10), borderwidth=0)
+        st.configure("Owl.Treeview.Heading", background=NAVY2, foreground=CREAM, font=(SANS[0], 10, "bold"),
+                     relief="flat")
+        st.map("Owl.Treeview", background=[("selected", "#2d3f63")], foreground=[("selected", CREAM)])
+        abox = tk.Frame(lower, bg=INK)
+        self.tree = ttk.Treeview(abox, style="Owl.Treeview", columns=("night", "frames", "time", "pulled"),
+                                 show="tree headings", selectmode="browse")
+        self.tree.heading("#0", text="target", anchor="w")
+        self.tree.heading("night", text="night"); self.tree.heading("frames", text="frames")
+        self.tree.heading("time", text="integration"); self.tree.heading("pulled", text="pulled")
+        self.tree.column("#0", width=190, stretch=True)
+        self.tree.column("night", width=96, anchor="w", stretch=False)
+        self.tree.column("frames", width=64, anchor="e", stretch=False)
+        self.tree.column("time", width=92, anchor="e", stretch=False)
+        self.tree.column("pulled", width=92, anchor="w", stretch=False)
+        tsb = tk.Scrollbar(abox, orient="vertical", command=self.tree.yview,
+                           bg=NAVY2, troughcolor=INK, activebackground="#22304a", relief="flat", width=14)
+        self.tree.configure(yscrollcommand=tsb.set)
+        tsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._selection_changed())
+        self.tree.bind("<Double-1>", lambda e: self.open_folder())
+        self.tree.tag_configure("target", foreground=CREAM, font=(SANS[0], 10, "bold"))
+        self.tree.tag_configure("fresh", foreground="#9be59b")
+        self.tree.tag_configure("empty", foreground=MUTE)
+        lower.add(abox, minsize=320)
+        self.preview_frame = tk.Frame(lower, bg=INK)
         self.preview_lbl = tk.Label(self.preview_frame, bg=INK, fg=MUTE, font=SANS,
-                                    text="the picture shows up here")
+                                    text="the quick look shows up here", wraplength=260, justify="center")
         self.preview_lbl.pack(fill="both", expand=True)
-        body.add(self.preview_frame, minsize=120)
+        lower.add(self.preview_frame, minsize=160)
+        body.add(lower, minsize=140)
+        self.lower = lower
+        self.after(200, lambda: lower.sash_place(0, max(380, int(lower.winfo_width() * 0.58)), 0))
         self.body = body
+        self.archive_rows = []
+        self.archive_root = None
         # log on top, picture below, roughly half and half once the window has a size
-        self.after(150, lambda: body.sash_place(0, 0, max(200, int(body.winfo_height() * 0.42))))
+        self.after(150, lambda: body.sash_place(0, 0, max(140, int(body.winfo_height() * 0.40))))
         self._resize_job = None
         self.preview_frame.bind("<Configure>", self._on_resize)
 
-        foot = tk.Frame(self, bg=NAVY); foot.pack(fill="x", padx=18, pady=(0, 12))
-        self.open_btn = tk.Button(foot, text="Open output folder", command=self.open_out, state="disabled",
+        # what happens to a night once it's on this computer: a real stacker.
+        # pick a night in the table (or a target: every night of it) and hand it over.
+        self.sw_btn = tk.Button(foot, text="Open in StackingWizard", command=self.open_stackingwizard, state="disabled",
+                                bg="#2f6b3a", fg=CREAM, activebackground="#3a8449", activeforeground=CREAM,
+                                relief="flat", padx=12, font=SANS)
+        self.sw_btn.pack(side="left")
+        self.open_btn = tk.Button(foot, text="Open folder", command=self.open_folder, state="disabled",
                                   bg=NAVY2, fg=CREAM, activebackground="#22304a", activeforeground=CREAM,
                                   relief="flat", padx=12, font=SANS)
-        self.open_btn.pack(side="left")
+        self.open_btn.pack(side="left", padx=(8, 0))
         self.stop_btn = tk.Button(foot, text="Stop", command=self.stop, state="disabled",
                                   bg=NAVY2, fg=CREAM, activebackground="#22304a", activeforeground=CREAM,
                                   relief="flat", padx=12, font=SANS)
         self.stop_btn.pack(side="left", padx=(8, 0))
-        self.status = tk.Label(foot, text="pick a folder.", fg=MUTE, bg=NAVY, font=SANS); self.status.pack(side="right")
+        self.status = tk.Label(foot, text="", fg=MUTE, bg=NAVY, font=SANS); self.status.pack(side="right")
+        self.sw_exe = find_stackingwizard(self.settings.get("stackingwizard", ""))
 
         self._refresh_hints()
-        self.say("point me at a folder of frames, or a whole night of session folders, and press the button. "
-                 "That's the entire manual.\n", "owl")
+        self.say("tick your scope and press the button: the night lands in the archive below. Pick a night there "
+                 "and send it to a stacker. That's the entire manual.\n", "owl")
+        self.after(300, self.refresh_archive)
         if len(sys.argv) > 1 and os.path.isdir(sys.argv[1]):
             # a folder was dropped on the button: that IS the button press
             self.folder.set(sys.argv[1])
@@ -1025,12 +1109,26 @@ class App(tk.Tk):
         if save:
             save_settings(self.settings)
         if not self.running():
-            self.button.set_label("PULL+STACK" if on else "STACK")
+            self.button.set_label(self.button_label())
         self._refresh_hints()
+        self._describe()
+        self.refresh_archive()
+
+    def button_label(self):
+        p = self.pulling()
+        if not p:
+            return "STACK"
+        return "PULL+STACK" if self.settings.get("quick_look") else "PULL"
+
+    def _quick_changed(self):
+        self.settings["quick_look"] = bool(self.quick_var.get())
+        save_settings(self.settings)
+        if not self.running():
+            self.button.set_label(self.button_label())
         self._describe()
 
     def pulling(self):
-        """Is the next press a pull-then-stack? Which scope: "odyssey", "seestar", or None."""
+        """Is the next press a pull? Which scope: "odyssey", "seestar", or None (a folder: stack it)."""
         if bool(self.pull_var.get()) and self.scopepull[0] is not None:
             return "odyssey"
         if bool(getattr(self, "seestar_var", None) and self.seestar_var.get()):
@@ -1080,9 +1178,10 @@ class App(tk.Tk):
         if save:
             save_settings(self.settings)
         if not self.running():
-            self.button.set_label("PULL+STACK" if self.pulling() else "STACK")
+            self.button.set_label(self.button_label())
         self._refresh_hints()
         self._describe()
+        self.refresh_archive()
 
     # ---- installing scopepull -----------------------------------------------
     def install_scopepull(self):
@@ -1204,15 +1303,17 @@ class App(tk.Tk):
         if self.pulling() == "seestar":
             where = f or SEESTAR_ROOT
             at = self._real(self.seestar_entry, self.seestar_at) or "wherever it is (USB, then \\\\seestar)"
-            self.mode_lbl.config(text=f"copy new subs off the Seestar at {at} into {where}, then stack the archive "
-                                      f"(targets already stacked are skipped)")
+            then = ("then quick-look stack the archive (nights already stacked are skipped)"
+                    if self.settings.get("quick_look") else "then list the archive. Stacking is the next button.")
+            self.mode_lbl.config(text=f"copy new subs off the Seestar at {at} into {where}, {then}")
             return
         if getattr(self, "scopepull", (None, None, None))[0] is not None and self.pulling() == "odyssey":
             where = f or self.scopepull[1]
             tgt = self._real(self.target_entry, self.pull_target)
             what = f"new {tgt!r} observations" if tgt else "everything new"
-            self.mode_lbl.config(text=f"pull {what} off the Odyssey into {where}, then stack the archive "
-                                      f"(targets already stacked are skipped)")
+            then = ("then quick-look stack the archive (nights already stacked are skipped)"
+                    if self.settings.get("quick_look") else "then list the archive. Stacking is the next button.")
+            self.mode_lbl.config(text=f"pull {what} off the Odyssey into {where}, {then}")
             return
         if not os.path.isdir(f):
             self.mode_lbl.config(text=""); return
@@ -1343,6 +1444,10 @@ class App(tk.Tk):
                 cmd += [f]
         else:
             cmd += [f]
+        self._pulled_this_run = bool(pull)
+        self._stacked_this_run = not pull or bool(self.settings.get("quick_look"))
+        if pull and not self._stacked_this_run:
+            cmd += ["--pull-only"]
         cmd += ["-o", out_arg]
         if self.preview_path:
             cmd += ["--preview", self.preview_path]
@@ -1352,7 +1457,8 @@ class App(tk.Tk):
 
         self.log.configure(state="normal"); self.log.delete("1.0", "end"); self.log.configure(state="disabled")
         self._cr_pending = False
-        self.preview_lbl.config(image="", text="working…")
+        if self._stacked_this_run:
+            self.preview_lbl.config(image="", text="working…")
         self._split(0.72)                       # the log has the floor
         self.paused = False
         self.button.set_label("PAUSE"); self.stop_btn.config(state="normal"); self.open_btn.config(state="disabled")
@@ -1386,6 +1492,8 @@ class App(tk.Tk):
                     self._scopepull_found(payload)
                 elif kind == "seestar":
                     self._seestar_probed(payload)
+                elif kind == "index":
+                    self._fill_archive(*payload)
                 elif kind == "scopepull_latest":
                     self._scopepull_latest(payload)
                 elif kind == "starstack_latest":
@@ -1455,20 +1563,24 @@ class App(tk.Tk):
         if self.settings.get("restack"):        # a one-off; nobody wants 95 minutes of M81 every night
             self.settings["restack"] = False
             save_settings(self.settings)
-        self.button.set_label("PULL+STACK" if self.pulling() else "STACK")
+        self.button.set_label(self.button_label())
         self.button.set_enabled(True); self.stop_btn.config(state="disabled")
-        self.open_btn.config(state="normal")
         if self._blink_job:
             self.after_cancel(self._blink_job); self._blink_job = None
         if rc == 0:
             self.status.config(text="done. go outside.")
             self.set_face("grudging")           # the most he will give you
-            self._split(0.28)                   # the picture has the floor now
-            self.after(120, self._show_preview)
+            if self._stacked_this_run:
+                self._split(0.4)                # the picture has the floor now
+                self.after(120, self._show_preview)
+            else:
+                self._split(0.3)                # the archive has the floor now
         else:
             self.status.config(text=f"stopped (exit {rc}). read the log.")
             self.set_face("furious")
-            self.preview_lbl.config(image="", text="no picture this time")
+            if self._stacked_this_run:
+                self.preview_lbl.config(image="", text="no picture this time")
+        self.refresh_archive(select_new=(rc == 0 and self._pulled_this_run))
 
     def _on_resize(self, _):
         if self.preview_path is None and not self.out_dir:
@@ -1496,16 +1608,201 @@ class App(tk.Tk):
         except tk.TclError as e:
             self.preview_lbl.config(image="", text=f"couldn't show preview: {e}")
 
-    def open_out(self):
-        d = self.out_dir
-        if not d or not os.path.isdir(d):
+    # ---- the archive --------------------------------------------------------
+    def _archive_root(self):
+        """The archive the table shows: the selected scope's, else the Folder box
+        if it's a folder, else the Seestar's."""
+        p = self.pulling()
+        f = self._real(self.folder_entry, self.folder)
+        if p == "odyssey" and self.scopepull[1]:
+            return f or self.scopepull[1]
+        if p == "seestar":
+            return f or SEESTAR_ROOT
+        if f and os.path.isdir(f):
+            return f
+        return SEESTAR_ROOT
+
+    def _folder_reindex(self):
+        if getattr(self, "_hinting", False) or not hasattr(self, "tree"):
             return
+        if getattr(self, "_reindex_job", None):
+            self.after_cancel(self._reindex_job)
+        self._reindex_job = self.after(700, self.refresh_archive)
+
+    def refresh_archive(self, select_new=False):
+        if not hasattr(self, "tree"):
+            return
+        root = self._archive_root()
+        self.archive_root = root
+        if FROZEN:
+            cmd = [sys.executable, "--cli", "--index", root]
+        else:
+            cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), STARSTACK, "--index", root]
+
+        def work():
+            import json
+            rows = []
+            try:
+                out = subprocess.run(cmd, capture_output=True, text=True, timeout=120, creationflags=NO_WINDOW).stdout
+                for line in out.splitlines():
+                    line = line.strip()
+                    if line.startswith("{"):
+                        rows.append(json.loads(line))
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
+            self.q.put(("index", (root, rows, select_new)))
+        threading.Thread(target=work, daemon=True).start()
+
+    @staticmethod
+    def _pretty(sec):
+        m = int(sec // 60)
+        return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m" if m else f"{int(sec)}s"
+
+    def _fill_archive(self, root, rows, select_new):
+        if root != self.archive_root:
+            return                              # the scope changed while we were counting
+        import time as _time
+        self.archive_rows = rows
+        self.tree.delete(*self.tree.get_children())
+        by_target = {}
+        for r in rows:
+            by_target.setdefault(r["target"], []).append(r)
+        now = _time.time()
+        newest = None
+
+        def ago(t):
+            d = now - t
+            return ("just now" if d < 3600 else f"{int(d // 3600)}h ago" if d < 86400
+                    else "yesterday" if d < 2 * 86400 else f"{int(d // 86400)}d ago")
+        for target in sorted(by_target, key=lambda t: max(r["night"] for r in by_target[t]), reverse=True):
+            rs = sorted(by_target[target], key=lambda r: r["night"], reverse=True)
+            total = sum(r["integration_s"] for r in rs); frames = sum(r["frames"] for r in rs)
+            tid = self.tree.insert("", "end", text=target, open=True,
+                                   values=(f"{len(rs)} night{'s' if len(rs) != 1 else ''}", frames, self._pretty(total), ""),
+                                   tags=("target",))
+            for r in rs:
+                fresh = now - r["pulled_at"] < 6 * 3600
+                iid = self.tree.insert(tid, "end", text="",
+                                       values=(r["night"] + ("  (mosaic)" if r.get("mosaic") else ""), r["frames"],
+                                               self._pretty(r["integration_s"]), ago(r["pulled_at"])),
+                                       tags=("fresh",) if fresh else ())
+                if newest is None or r["pulled_at"] > newest[0]:
+                    newest = (r["pulled_at"], iid)
+        if not rows:
+            self.tree.insert("", "end", text=f"nothing in {root} yet", tags=("empty",))
+        n_nights = len({r["night"] for r in rows})
+        total = sum(r["integration_s"] for r in rows)
+        self.status.config(text=f"archive: {len(rows)} session{'s' if len(rows) != 1 else ''}, "
+                                f"{n_nights} night{'s' if n_nights != 1 else ''}, {self._pretty(total)} of sky"
+                           if rows else "archive: empty. Pull something.")
+        if select_new and newest:
+            self.tree.selection_set(newest[1]); self.tree.see(newest[1])
+        self._selection_changed()
+
+    def _selected(self):
+        """(kind, folder-or-target, rows): "night" = one session folder, "target" = all its nights."""
+        sel = self.tree.selection()
+        if not sel:
+            return None, None, []
+        iid = sel[0]
+        parent = self.tree.parent(iid)
+        if parent:
+            night = self.tree.set(iid, "night").split("  ")[0]
+            target = self.tree.item(parent, "text")
+            rows = [r for r in self.archive_rows if r["target"] == target and r["night"] == night]
+            return ("night", rows[0]["folder"], rows) if rows else (None, None, [])
+        target = self.tree.item(iid, "text")
+        rows = [r for r in self.archive_rows if r["target"] == target]
+        return ("target", target, rows) if rows else (None, None, [])
+
+    def _selection_changed(self):
+        kind, what, rows = self._selected()
+        on = "normal" if kind and not self.running() else "disabled"
+        self.open_btn.config(state=on)
+        self.sw_btn.config(state=on)
+        if kind == "target" and len(rows) > 1:
+            self.sw_btn.config(text=f"Combine {len(rows)} nights → StackingWizard")
+        else:
+            self.sw_btn.config(text="Open in StackingWizard")
+
+    def _handoff_folder(self):
+        """The folder to hand to a stacker: the night, or every night of the target
+        gathered into combined/<target> (hard links)."""
+        kind, what, rows = self._selected()
+        if kind == "night":
+            return what
+        if kind == "target":
+            if len(rows) == 1:
+                return rows[0]["folder"]
+            if FROZEN:
+                cmd = [sys.executable, "--cli", self.archive_root, "--combine", what]
+            else:
+                cmd = [os.environ.get("STARSTACK_PYTHON", sys.executable), STARSTACK, self.archive_root, "--combine", what]
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, creationflags=NO_WINDOW)
+            except (OSError, subprocess.SubprocessError) as e:
+                self.say(f"couldn't combine: {e}\n", "bad"); return None
+            dest = None
+            for line in r.stdout.splitlines():
+                if line.startswith("combined: "):
+                    dest = line[len("combined: "):].strip()
+                elif line.startswith("combined "):
+                    self.say(line + "\n", "owl")
+                elif line.startswith("  "):
+                    self.say(line + "\n")
+            if dest is None:
+                self.say((r.stdout + r.stderr).strip() + "\n", "bad")
+            return dest
+        return None
+
+    def open_folder(self):
+        d = self._handoff_folder()
+        if d and os.path.isdir(d):
+            self._open_path(d)
+
+    def _open_path(self, d):
         if sys.platform.startswith("win"):
             os.startfile(d)                       # noqa
         elif sys.platform == "darwin":
             subprocess.Popen(["open", d])
         else:
             subprocess.Popen(["xdg-open", d])
+
+    def open_stackingwizard(self):
+        """Hand the selected night (or combined target) to StackingWizard. It takes
+        a folder by picker or drag-and-drop; the owl launches it with the folder
+        as an argument in case it listens, puts the path on the clipboard for
+        its picker, and opens the folder so it can be dragged across."""
+        d = self._handoff_folder()
+        if not d or not os.path.isdir(d):
+            return
+        exe = self.sw_exe or find_stackingwizard(self.settings.get("stackingwizard", ""))
+        if not exe:
+            from tkinter import filedialog
+            exe = filedialog.askopenfilename(title="Where is StackingWizard?", parent=self)
+            if not exe:
+                self.say("StackingWizard not found. It's a free download: https://astrowizard.lukomatico.com/stackingwizard.html "
+                         "-- put it in Downloads or on the Desktop and the owl will find it.\n", "owl")
+                return
+            self.settings["stackingwizard"] = exe; save_settings(self.settings)
+        self.sw_exe = exe
+        try:
+            self.clipboard_clear(); self.clipboard_append(d)
+        except tk.TclError:
+            pass
+        try:
+            subprocess.Popen([exe, d], cwd=os.path.dirname(exe) or None)
+        except OSError as e:
+            self.say(f"couldn't start {exe}: {e}\n", "bad"); return
+        self._open_path(d)
+        self.say(f"handed to StackingWizard: {d}\n  (the path is on your clipboard for its folder picker, "
+                 f"and the folder is open to drag across)\n", "owl")
+        self.status.config(text="over to StackingWizard.")
+
+    def open_out(self):
+        d = self.out_dir
+        if d and os.path.isdir(d):
+            self._open_path(d)
 
     def toggle_pause(self):
         if not (self.proc and self.proc.poll() is None):

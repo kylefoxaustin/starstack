@@ -280,6 +280,44 @@ def test_mosaic_is_tiled_onto_one_canvas(tmp_path):
     assert hi - lo < 0.004, (lo, hi)                            # no plateaus: panels at the same level
 
 
+def test_archive_index_and_combine(tmp_path):
+    """The archive is <root>/<night>/<target>/. --index lists it (frames,
+    exposure from the header, integration); --combine gathers every night of a
+    target into combined/<target> as hard links, once, without touching the nights."""
+    from astropy.io import fits
+    rng = np.random.default_rng(4)
+    root = tmp_path / "seestar"
+    def night(n, target, stamps):
+        d = root / n / target; d.mkdir(parents=True)
+        for st in stamps:
+            h = fits.PrimaryHDU(_seestar_frame(rng, 120, 160)); h.header["BAYERPAT"] = "GRBG"; h.header["EXPTIME"] = 10.0
+            h.writeto(d / f"Light_{target}_10.0s_LP_{st}.fit")
+            (d / f"Light_{target}_10.0s_LP_{st}.jpg").write_bytes(b"jpg")      # a twin that must not count
+    night("2026-09-22", "NGC 7000", ["20260922-203537", "20260922-203551", "20260922-203604"])
+    night("2026-10-04", "NGC 7000", ["20261004-210001", "20261004-210015"])
+    night("2026-10-04", "M 27", ["20261004-220001"])
+    (root / "stacks").mkdir(); (root / "stacks" / "M 27.tif").write_bytes(b"x")
+    rows = ss.archive_index(str(root))
+    assert [(r["night"], r["target"], r["frames"], r["integration_s"], r["stacked"]) for r in rows] == [
+        ("2026-10-04", "M 27", 1, 10.0, True), ("2026-10-04", "NGC 7000", 2, 20.0, False),
+        ("2026-09-22", "NGC 7000", 3, 30.0, False)]
+    lines = []
+    dest = ss.combine_target(str(root), "NGC 7000", log=lines.append)
+    assert dest == str(root / "combined" / "NGC 7000")
+    names = sorted(os.listdir(dest))
+    assert len(names) == 5 and all(n.endswith(".fit") for n in names)
+    assert os.stat(os.path.join(dest, names[0])).st_nlink == 2          # a hard link, not a copy
+    assert "2 nights" in lines[0] and "5 frames" in lines[0]
+    assert ss.combine_target(str(root), "NGC 7000", log=lines.append) == dest and len(os.listdir(dest)) == 5
+    assert ss.combine_target(str(root), "NGC 7000", nights=["2026-10-04"], log=lines.append) == dest
+    assert ss.combine_target(str(root), "nothing", log=lines.append) is None
+    # the combined/ folder is not a night: the index doesn't list it twice
+    assert len(ss.archive_index(str(root))) == 3
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "starstack.py"), "--index", str(root)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.count("{") == 3
+
+
 def test_seestar_pull_syncs_subs_by_night(tmp_path):
     """A Seestar's MyWorks (USB drive or \\\\seestar share): every <target>_sub/*.fit
     the archive hasn't got is copied to <root>/<night>/<target>/; JPEGs,
