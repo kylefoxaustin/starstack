@@ -8,6 +8,20 @@
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
 </p>
 
+> ### 🦉 The owl lives at [scopepull](https://github.com/kylefoxaustin/scopepull) now
+>
+> This window, the archive table and the StackingWizard hand-off moved there in
+> October 2026: scopepull pulls every scope Kyle owns -- Odyssey Pro, Seestar
+> S50 / S50 Pro, a Dwarf in December -- and the owl is its face. **starstack is
+> the quick-look stacker he calls**: `pip install
+> git+https://github.com/kylefoxaustin/starstack`, and scopepull's window finds
+> it on PATH and turns its quick-look checkbox on.
+>
+> Everything below still works exactly as it did -- `starstack <folder>` is the
+> stacker, `starstack --pull` still shells out to scopepull -- but the pulling
+> half, and `starstack-button`, are superseded by `scopepull` and `scopepull
+> gui`. See [THE_OWL_MOVES_IN.md](https://github.com/kylefoxaustin/scopepull/blob/main/docs/THE_OWL_MOVES_IN.md).
+
 **Gets the night off your scope.** Tick your scope, press the button, and
 the night's sub-frames land in an archive on your computer, sorted by night
 and target. Pick a night -- or every night you've ever spent on one target --
