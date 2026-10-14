@@ -243,7 +243,7 @@ other whole night.
 ```
 python starstack.py --pull-seestar                 # look for it: USB drive first, then \\seestar
 python starstack.py --pull-seestar=D:              # the USB drive
-python starstack.py --pull-seestar=10.0.1.215      # by address, when the name doesn't resolve
+python starstack.py --pull-seestar=192.168.1.50      # by address, when the name doesn't resolve
 python starstack.py --pull-seestar=seestar --pull-target "M 31"
 ```
 
@@ -436,7 +436,7 @@ sub-frame the archive hasn't got into `~/Astro/seestar/<night>/<target>/`
 (or the folder you named), then stacks the archive. The owl looks for the
 scope on its own -- a USB drive with `MyWorks` on it first, then
 `\\seestar` over Wi-Fi in station mode -- and the line under the row says
-where it found it ("Seestar on Wi-Fi at seestar (10.0.1.215)") or why not.
+where it found it ("Seestar on Wi-Fi at seestar (192.168.1.50)") or why not.
 The *at* box is for when it can't: a drive letter, a folder, a UNC path, or
 the scope's address from the Seestar app. Ticking one scope's row unticks
 the other; a press pulls from one scope. What is and isn't copied, and the
@@ -747,7 +747,7 @@ Bayer frames with 400 hot pixels, a satellite streak, three truncated frames
   (3840×2160 FITS, `BAYERPAT = 'GRBG'`, LP filter) pulled from the USB drive
   into `~/Astro/seestar/2026-09-22/NGC 7000/` and stacked -- the result
   matches the scope's own stack for colour -- and the same `MyWorks`
-  reached over Wi-Fi at `\\10.0.1.215\EMMC Images` (Samba 4.19.5, guest)
+  reached over Wi-Fi at `\\192.168.1.50\EMMC Images` (Samba 4.19.5, guest)
   once Windows 11 was told to allow it; plus a synthetic `MyWorks` with a
   mosaic, a lunar folder and a session across midnight to pin down what
   gets copied where
